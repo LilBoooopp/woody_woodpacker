@@ -6,10 +6,11 @@
 /*   By: cbopp <cbopp@student.42lausanne.ch>        +#+  +:+       +#+        */
 /*                                                +#+#+#+#+#+   +#+           */
 /*   Created: 2026/03/25 13:23:26 by cbopp             #+#    #+#             */
-/*   Updated: 2026/04/17 20:26:02 by cbopp            ###   ########.fr       */
+/*   Updated: 2026/04/17 21:33:21 by cbopp            ###   ########.fr       */
 /*                                                                            */
 /* ************************************************************************** */
 
+#include "stub.h"
 #include <elf.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -181,6 +182,53 @@ void rc4_encrypt(uint8_t *data, size_t data_len, uint8_t *key_out) {
   rc4_ksa(s, key, 16);
   rc4_prga(s, data, data_len);
   memcpy(key_out, key, 16);
+}
+
+void inject_stub(void *woody, Elf64_Phdr *note_segment, Elf64_Ehdr *ehdr,
+                 Elf64_Shdr *text_section, uint8_t *key, uint64_t inflate_plt) {
+  memcpy(woody + note_segment->p_offset, stub_bin, stub_bin_len);
+
+  uint64_t placeholder = 0xDEADBEEFDEADBEEF;
+  uint64_t real_value = text_section->sh_addr;
+  void *patch_site =
+      memmem(woody + note_segment->p_offset, stub_bin_len, &placeholder, 8);
+  if (patch_site)
+    memcpy(patch_site, &real_value, 8);
+
+  placeholder = 0xBADDCAFEBADDCAFE;
+  real_value = inflate_plt;
+  patch_site =
+      memmem(woody + note_segment->p_offset, stub_bin_len, &placeholder, 8);
+  if (patch_site)
+    memcpy(patch_site, &real_value, 8);
+
+  placeholder = 0xCAFEBABECAFEBABE;
+  real_value = text_section->sh_size;
+  patch_site =
+      memmem(woody + note_segment->p_offset, stub_bin_len, &placeholder, 8);
+  if (patch_site)
+    memcpy(patch_site, &real_value, 8);
+
+  placeholder = 0xAAAAAAAAAAAAAAAA;
+  real_value = ehdr->e_entry;
+  patch_site =
+      memmem(woody + note_segment->p_offset, stub_bin_len, &placeholder, 8);
+  if (patch_site)
+    memcpy(patch_site, &real_value, 8);
+
+  uint8_t key_placeholder[16] = {0xDE, 0xAD, 0xBE, 0xEF, 0xDE, 0xAD,
+                                 0xBE, 0xEF, 0xDE, 0xAD, 0xBE, 0xEF,
+                                 0xDE, 0xAD, 0xBE, 0xEF};
+  patch_site =
+      memmem(woody + note_segment->p_offset, stub_bin_len, key_placeholder, 16);
+  if (patch_site)
+    memcpy(patch_site, key, 16);
+
+  note_segment->p_type = PT_LOAD;
+  note_segment->p_flags = PF_R | PF_X;
+  note_segment->p_vaddr = 0xc000000;
+
+  ehdr->e_entry = 0xc000000;
 }
 
 int main(int argc, char **argv) {
