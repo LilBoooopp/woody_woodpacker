@@ -6,7 +6,7 @@
 /*   By: cbopp <cbopp@student.42lausanne.ch>        +#+  +:+       +#+        */
 /*                                                +#+#+#+#+#+   +#+           */
 /*   Created: 2026/03/25 13:23:26 by cbopp             #+#    #+#             */
-/*   Updated: 2026/04/17 13:48:55 by cbopp            ###   ########.fr       */
+/*   Updated: 2026/04/17 14:07:31 by cbopp            ###   ########.fr       */
 /*                                                                            */
 /* ************************************************************************** */
 
@@ -30,6 +30,35 @@
 //   Elf64_Xword sh_addralign; // Alighment requirement
 //   Elf64_Xword sh_entsize;   // Entry size if section holds a table
 // } Elf64_Shdr;
+
+// typedef struct {
+//   unsigned char e_ident[16]; // Magic bytes + class (32/64), endianness, OS
+//   ABI Elf64_Half e_type;         // ET_EXEC (executable), ET_DYN (shared lib
+//   / PIE) Elf64_Half e_machine;      // Target ISA: EM_X86_64, EM_386, etc
+//   Elf64_Word e_version;      // ELF version (1)
+//   Elf64_Addr e_entry;        // Virtual address of entry point (_start)
+//   Elf64_Off e_phoff;         // Byte offset to program header table in file
+//   Elf64_Off e_shoff;         // Byte offset to section header table in file
+//   Elf64_Word e_flags;        // Architecture-specific flags (0 on x86_64)
+//   Elf64_Half e_ehsize;       // Size of this ELF header
+//   Elf64_Half e_phentsize;    // Size of one program header entry
+//   Elf64_Half e_phnum;        // Number of program header
+//   Elf64_Half e_shentsize;    // Size of one section header entry
+//   Elf64_Half e_shnum;        // Number of section header entries
+//   Elf64_Half e_shstrndx;     // Index of section name string table in shdr
+//   array
+// } Elf64_Ehdr;
+
+// typedef struct {
+//   Elf64_Word p_type;  // Secment type: PT_LOAD, PT_NOTE, PT_PHDR, etc.
+//   Elf64_Word p_flags; // Permissions: PF_R (read), PF_W (write), PF_X
+//   (exectue) Elf64_Off p_offset; // Byte offset of segment data within the ELF
+//   file Elf64_Addr p_vaddr; // Virtual address where segment is loaded at
+//   runtime Elf64_Addr p_paddr; // Physical address (irrelevant on modern
+//   systems) Elf64_Xword p_filesz; // Size of segment data in the file
+//   Elf64_Xword p_memsz;  // Size of segment in memory (memsz > filesz for
+//   .bss) Elf64_Xword p_align;  // Alighment requirement for loading
+// } Elf64_Phdr;
 
 /**
  * @brief validates the ELF magic bytes at the start of file (0x7f)
@@ -133,10 +162,10 @@ int main(int argc, char **argv) {
   // text_section->sh_size bytes starting here
 
   // finding .note
-  Elf64_Shdr *note_section = NULL;
-  for (int i = 0; i < ehdr->e_shnum; i++) {
-    if (strcmp(names + shdr[i].sh_name, ".note") == 0) {
-      text_section = &shdr[i];
+  Elf64_Phdr *note_segment = NULL;
+  for (int i = 0; i < ehdr->e_phnum; i++) {
+    if (phdr[i].p_type == PT_NOTE) {
+      note_segment = &phdr[i];
       break;
     }
   }
