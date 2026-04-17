@@ -6,7 +6,7 @@
 /*   By: cbopp <cbopp@student.42lausanne.ch>        +#+  +:+       +#+        */
 /*                                                +#+#+#+#+#+   +#+           */
 /*   Created: 2026/03/25 13:23:26 by cbopp             #+#    #+#             */
-/*   Updated: 2026/04/17 15:43:19 by cbopp            ###   ########.fr       */
+/*   Updated: 2026/04/17 20:18:09 by cbopp            ###   ########.fr       */
 /*                                                                            */
 /* ************************************************************************** */
 
@@ -18,6 +18,9 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <zlib.h>
+
+#define KEY_SIZE 16
 
 // typedef struct {
 //   Elf64_Word sh_name;       // Index into string table
@@ -118,22 +121,86 @@ int check_elf(Elf64_Ehdr *elf) {
   return (ret);
 }
 
+/**
+ * @brief Key Scheduling Algorithm
+ * @params *s 256 byte array
+ * @params *key scrambles order of *s
+ * @params key_len
+ */
+void rc4_ksa(uint8_t *s, uint8_t *key, size_t key_len) {
+  for (int i = 0; i < 256; i++) {
+    s[i] = i;
+  }
+
+  int j = 0;
+  for (int i = 0; i < 256; i++) {
+    j = (j + s[i] + key[i % key_len]) % 256;
+
+    s[i] = s[i] ^ s[j];
+    s[j] = s[i] ^ s[j];
+    s[i] = s[i] ^ s[j];
+  }
+}
+
+/**
+ * @brief Pseudo-random key gen
+ * Generates keystream bytes by strring *s and then XOR keystream byte with data
+ * byte
+ */
+void rc4_prga(uint8_t *s, uint8_t *data, size_t data_len) {
+  int i = 0;
+  int j = 0;
+  for (int k = 0; k < data_len; k++) {
+    i = (i + 1) % 256;
+    j = (j + s[i]) % 256;
+    s[i] = s[i] ^ s[j];
+    s[j] = s[i] ^ s[j];
+    s[i] = s[i] ^ s[j];
+    data[k] ^= s[(s[i] + s[j]) % 256];
+  }
+}
+
+void generate_key(uint8_t *key, size_t key_len) {
+  int fd = open("/dev/urandom", O_RDONLY);
+  if (fd < 0) {
+    printf("Error: could not open /dev/urandom\n");
+    return;
+  }
+  read(fd, key, key_len);
+  close(fd);
+  for (size_t i = 0; i < key_len; i++)
+    printf("%02X", key[i]);
+  printf("\n");
+}
+
+void rc4_encrypt(uint8_t *data, size_t data_len, uint8_t *key_out) {
+  uint8_t s[256];
+  uint8_t key[16];
+
+  generate_key(key, 16);
+  rc4_ksa(s, key, 16);
+  rc4_prga(s, data, data_len);
+  memcpy(key_out, key, 16);
+}
+
 int main(int argc, char **argv) {
   if (argc != 2) {
     printf("Not enough arguments.\n");
     printf("Expected usage: ./woody_woodpacker <ELF binary>");
     return (1);
   }
-  // TODO: CHECK IF FAIL
   int fd = open(argv[1], O_RDONLY);
+  if (fd < 0)
+    return (printf("Error: could not open file\n"), 1);
   struct stat st;
-  // TODO: CHECK IF FAIL
-  fstat(fd, &st);
+  if (fstat(fd, &st) < 0)
+    return (printf("Error: fstat failed\n"), close(fd), 1);
 
-  // TODO: CHECK IF FAIL
   void *map = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
-  Elf64_Ehdr *ehdr = (Elf64_Ehdr *)map;
+  if (map == MAP_FAILED)
+    return (printf("Error: mmap failed\n"), close(fd), 1);
 
+  Elf64_Ehdr *ehdr = (Elf64_Ehdr *)map;
   if (check_elf(ehdr)) {
     munmap(map, st.st_size);
     close(fd);
@@ -158,9 +225,9 @@ int main(int argc, char **argv) {
       break;
     }
   }
-
-  void *text_data = map + text_section->sh_offset;
-  // text_section->sh_size bytes starting here
+  if (!text_section)
+    return (printf("Error: .text section not found\n"), munmap(map, st.st_size),
+            close(fd), 1);
 
   // finding .note
   Elf64_Phdr *note_segment = NULL;
@@ -170,15 +237,29 @@ int main(int argc, char **argv) {
       break;
     }
   }
+  if (!note_segment)
+    return (printf("Error: PT_NOTE segment not found\n"),
+            munmap(map, st.st_size), close(fd), 1);
 
-  // RW version of binary
+  // Writable version of binary
   size_t output_size = st.st_size;
   void *woody = malloc(output_size);
   if (!woody)
-    return (printf("Woody malloc failed."), 1);
+    return (printf("Woody malloc failed."), munmap(map, st.st_size), close(fd),
+            1);
   memcpy(woody, map, output_size);
 
   // cleanup memory
   munmap(map, st.st_size);
   close(fd);
+
+  // text_section->sh_size bytes starting here
+  void *text_data = (uint8_t *)(woody + text_section->sh_offset);
+
+  /*
+   * TODO: call zlib_compress before encryption
+   */
+
+  uint8_t key[16];
+  rc4_encrypt(text_data, text_section->sh_size, key);
 }
