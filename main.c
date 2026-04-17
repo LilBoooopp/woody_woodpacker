@@ -6,7 +6,7 @@
 /*   By: cbopp <cbopp@student.42lausanne.ch>        +#+  +:+       +#+        */
 /*                                                +#+#+#+#+#+   +#+           */
 /*   Created: 2026/03/25 13:23:26 by cbopp             #+#    #+#             */
-/*   Updated: 2026/04/17 20:18:09 by cbopp            ###   ########.fr       */
+/*   Updated: 2026/04/17 20:26:02 by cbopp            ###   ########.fr       */
 /*                                                                            */
 /* ************************************************************************** */
 
@@ -262,4 +262,11 @@ int main(int argc, char **argv) {
 
   uint8_t key[16];
   rc4_encrypt(text_data, text_section->sh_size, key);
+
+  open("woody", O_WRONLY | O_CREAT | O_TRUNC, 0755);
+  write(fd, woody, output_size);
+  close(fd);
+
+  free(woody);
+  return (0);
 }
