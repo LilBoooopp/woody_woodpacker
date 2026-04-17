@@ -1,9 +1,9 @@
 cmake_minimum_required(VERSION 3.16...3.30 FATAL_ERROR)
 
 project(
-  woody_woodpacker
+  woody
   VERSION 1.0
-  DESCRIPTION "woody_woodpacker packer"
+  DESCRIPTION "woody packer"
   LANGUAGES C)
 
 # set(CMAKE_C_STANDARD)
@@ -48,7 +48,6 @@ endif()
 
 set(SOURCES main.c)
 
-# target_include_directories(woody_woodpacker PUBLIC
-# ${CMAKE_CURRENT_SOURCE_DIR})
-add_executable(woody ${SOURCES})
-target_link_libraries(woody PRIVATE woody_woodpacker)
+# target_include_directories(woody PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+add_executable(woody_woodpacker ${SOURCES})
+target_link_libraries(woody_woodpacker PRIVATE woody)
