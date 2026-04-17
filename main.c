@@ -6,13 +6,14 @@
 /*   By: cbopp <cbopp@student.42lausanne.ch>        +#+  +:+       +#+        */
 /*                                                +#+#+#+#+#+   +#+           */
 /*   Created: 2026/03/25 13:23:26 by cbopp             #+#    #+#             */
-/*   Updated: 2026/04/17 14:07:31 by cbopp            ###   ########.fr       */
+/*   Updated: 2026/04/17 15:43:19 by cbopp            ###   ########.fr       */
 /*                                                                            */
 /* ************************************************************************** */
 
 #include <elf.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -169,4 +170,15 @@ int main(int argc, char **argv) {
       break;
     }
   }
+
+  // RW version of binary
+  size_t output_size = st.st_size;
+  void *woody = malloc(output_size);
+  if (!woody)
+    return (printf("Woody malloc failed."), 1);
+  memcpy(woody, map, output_size);
+
+  // cleanup memory
+  munmap(map, st.st_size);
+  close(fd);
 }
