@@ -6,7 +6,7 @@
 /*   By: cbopp <cbopp@student.42lausanne.ch>        +#+  +:+       +#+        */
 /*                                                +#+#+#+#+#+   +#+           */
 /*   Created: 2026/03/25 13:23:26 by cbopp             #+#    #+#             */
-/*   Updated: 2026/04/17 21:33:21 by cbopp            ###   ########.fr       */
+/*   Updated: 2026/04/17 21:48:24 by cbopp            ###   ########.fr       */
 /*                                                                            */
 /* ************************************************************************** */
 
@@ -227,6 +227,9 @@ void inject_stub(void *woody, Elf64_Phdr *note_segment, Elf64_Ehdr *ehdr,
   note_segment->p_type = PT_LOAD;
   note_segment->p_flags = PF_R | PF_X;
   note_segment->p_vaddr = 0xc000000;
+  note_segment->p_paddr = 0xc000000;
+  note_segment->p_filesz = stub_bin_len;
+  note_segment->p_memsz = stub_bin_len;
 
   ehdr->e_entry = 0xc000000;
 }
@@ -255,15 +258,23 @@ int main(int argc, char **argv) {
     return (1);
   }
 
-  // Program headers with ehdr->e_phnum entries
-  Elf64_Phdr *phdr = (Elf64_Phdr *)(map + ehdr->e_phoff);
+  // Writable version of binary
+  size_t output_size = st.st_size;
+  void *woody = malloc(output_size);
+  if (!woody)
+    return (printf("Woody malloc failed."), munmap(map, st.st_size), close(fd),
+            1);
+  memcpy(woody, map, output_size);
+  // cleanup memory
+  munmap(map, st.st_size);
+  close(fd);
 
-  // Section headers with ehdr->e_shnum entries
-  Elf64_Shdr *shdr = (Elf64_Shdr *)(map + ehdr->e_shoff);
-
-  // get string tbale section
+  // new pointers
+  ehdr = (Elf64_Ehdr *)woody;
+  Elf64_Phdr *phdr = (Elf64_Phdr *)(woody + ehdr->e_phoff);
+  Elf64_Shdr *shdr = (Elf64_Shdr *)(woody + ehdr->e_shoff);
   Elf64_Shdr *strtab = &shdr[ehdr->e_shstrndx];
-  char *names = (char *)(map + strtab->sh_offset);
+  char *names = (char *)(woody + strtab->sh_offset);
 
   // finding .text
   Elf64_Shdr *text_section = NULL;
@@ -274,8 +285,10 @@ int main(int argc, char **argv) {
     }
   }
   if (!text_section)
-    return (printf("Error: .text section not found\n"), munmap(map, st.st_size),
-            close(fd), 1);
+    return (printf("Error: .text section not found\n"), free(woody), 1);
+
+  // text_section->sh_size bytes starting here
+  void *text_data = (uint8_t *)(woody + text_section->sh_offset);
 
   // finding .note
   Elf64_Phdr *note_segment = NULL;
@@ -286,23 +299,7 @@ int main(int argc, char **argv) {
     }
   }
   if (!note_segment)
-    return (printf("Error: PT_NOTE segment not found\n"),
-            munmap(map, st.st_size), close(fd), 1);
-
-  // Writable version of binary
-  size_t output_size = st.st_size;
-  void *woody = malloc(output_size);
-  if (!woody)
-    return (printf("Woody malloc failed."), munmap(map, st.st_size), close(fd),
-            1);
-  memcpy(woody, map, output_size);
-
-  // cleanup memory
-  munmap(map, st.st_size);
-  close(fd);
-
-  // text_section->sh_size bytes starting here
-  void *text_data = (uint8_t *)(woody + text_section->sh_offset);
+    return (printf("Error: PT_NOTE segment not found\n"), free(woody), 1);
 
   /*
    * TODO: call zlib_compress before encryption
@@ -311,9 +308,15 @@ int main(int argc, char **argv) {
   uint8_t key[16];
   rc4_encrypt(text_data, text_section->sh_size, key);
 
-  open("woody", O_WRONLY | O_CREAT | O_TRUNC, 0755);
-  write(fd, woody, output_size);
-  close(fd);
+  inject_stub(woody, note_segment, ehdr, text_section, key, 0);
+
+  // write to disk
+  int fd_output = open("woody", O_WRONLY | O_CREAT | O_TRUNC, 0755);
+  if (fd_output < 0)
+    return (printf("Error: Woody open() failed"), free(woody), 1);
+  if (write(fd_output, woody, output_size) < 0)
+    return (printf("Error: write() failed"), free(woody), close(fd_output), 1);
+  close(fd_output);
 
   free(woody);
   return (0);
