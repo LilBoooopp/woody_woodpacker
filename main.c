@@ -6,7 +6,7 @@
 /*   By: cbopp <cbopp@student.42lausanne.ch>        +#+  +:+       +#+        */
 /*                                                +#+#+#+#+#+   +#+           */
 /*   Created: 2026/03/25 13:23:26 by cbopp             #+#    #+#             */
-/*   Updated: 2026/04/05 21:12:22 by cbopp            ###   ########.fr       */
+/*   Updated: 2026/04/17 13:48:55 by cbopp            ###   ########.fr       */
 /*                                                                            */
 /* ************************************************************************** */
 
@@ -31,6 +31,9 @@
 //   Elf64_Xword sh_entsize;   // Entry size if section holds a table
 // } Elf64_Shdr;
 
+/**
+ * @brief validates the ELF magic bytes at the start of file (0x7f)
+ */
 int check_mem(Elf64_Ehdr *elf) {
   if (memcmp(elf->e_ident, ELFMAG, SELFMAG) != 0) {
     printf("Error: Not an ELF file\n");
@@ -39,6 +42,10 @@ int check_mem(Elf64_Ehdr *elf) {
   return (0);
 }
 
+/**
+ * @brief Check for 64-bit
+ * e_ident[EI_CLASS] is ELFCLASS32 (1) or ELFCLASS64 (2).
+ */
 int check_64bit(Elf64_Ehdr *elf) {
   if (elf->e_ident[EI_CLASS] != ELFCLASS64) {
     printf("Error: Not a 64-bit ELF\n");
@@ -47,6 +54,10 @@ int check_64bit(Elf64_Ehdr *elf) {
   return (0);
 }
 
+/**
+ * @brief validates architecture.
+ * EM_X86_64 = 62
+ */
 int check_8664(Elf64_Ehdr *elf) {
   if (elf->e_machine != EM_X86_64) {
     printf("File architecture not supported. x86_64 only\n");
@@ -55,6 +66,9 @@ int check_8664(Elf64_Ehdr *elf) {
   return (0);
 }
 
+/**
+ * @brief Checks that file is executable or shared library.
+ */
 int check_exec(Elf64_Ehdr *elf) {
   if (elf->e_type != ET_EXEC && elf->e_type != ET_DYN) {
     printf("Error: Nt an executable\n");
@@ -80,10 +94,13 @@ int main(int argc, char **argv) {
     printf("Expected usage: ./woody_woodpacker <ELF binary>");
     return (1);
   }
+  // TODO: CHECK IF FAIL
   int fd = open(argv[1], O_RDONLY);
   struct stat st;
+  // TODO: CHECK IF FAIL
   fstat(fd, &st);
 
+  // TODO: CHECK IF FAIL
   void *map = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
   Elf64_Ehdr *ehdr = (Elf64_Ehdr *)map;
 
@@ -114,4 +131,13 @@ int main(int argc, char **argv) {
 
   void *text_data = map + text_section->sh_offset;
   // text_section->sh_size bytes starting here
+
+  // finding .note
+  Elf64_Shdr *note_section = NULL;
+  for (int i = 0; i < ehdr->e_shnum; i++) {
+    if (strcmp(names + shdr[i].sh_name, ".note") == 0) {
+      text_section = &shdr[i];
+      break;
+    }
+  }
 }
