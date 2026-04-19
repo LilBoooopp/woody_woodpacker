@@ -6,7 +6,7 @@
 /*   By: cbopp <cbopp@student.42lausanne.ch>        +#+  +:+       +#+        */
 /*                                                +#+#+#+#+#+   +#+           */
 /*   Created: 2026/03/25 13:23:26 by cbopp             #+#    #+#             */
-/*   Updated: 2026/04/17 21:48:24 by cbopp            ###   ########.fr       */
+/*   Updated: 2026/04/20 00:00:40 by cbopp            ###   ########.fr       */
 /*                                                                            */
 /* ************************************************************************** */
 
@@ -151,7 +151,7 @@ void rc4_ksa(uint8_t *s, uint8_t *key, size_t key_len) {
 void rc4_prga(uint8_t *s, uint8_t *data, size_t data_len) {
   int i = 0;
   int j = 0;
-  for (int k = 0; k < data_len; k++) {
+  for (int k = 0; (size_t)k < data_len; k++) {
     i = (i + 1) % 256;
     j = (j + s[i]) % 256;
     s[i] = s[i] ^ s[j];
@@ -185,42 +185,39 @@ void rc4_encrypt(uint8_t *data, size_t data_len, uint8_t *key_out) {
 }
 
 void inject_stub(void *woody, Elf64_Phdr *note_segment, Elf64_Ehdr *ehdr,
-                 Elf64_Shdr *text_section, uint8_t *key, uint64_t inflate_plt) {
-  memcpy(woody + note_segment->p_offset, stub_bin, stub_bin_len);
+                 Elf64_Shdr *text_section, uint8_t *key, uint64_t inflate_plt,
+                 size_t file_size) {
+  note_segment->p_offset = file_size;
+  memcpy(woody + file_size, stub_bin, stub_bin_len);
 
   uint64_t placeholder = 0xDEADBEEFDEADBEEF;
   uint64_t real_value = text_section->sh_addr;
-  void *patch_site =
-      memmem(woody + note_segment->p_offset, stub_bin_len, &placeholder, 8);
+  void *patch_site = memmem(woody + file_size, stub_bin_len, &placeholder, 8);
   if (patch_site)
     memcpy(patch_site, &real_value, 8);
 
   placeholder = 0xBADDCAFEBADDCAFE;
   real_value = inflate_plt;
-  patch_site =
-      memmem(woody + note_segment->p_offset, stub_bin_len, &placeholder, 8);
+  patch_site = memmem(woody + file_size, stub_bin_len, &placeholder, 8);
   if (patch_site)
     memcpy(patch_site, &real_value, 8);
 
   placeholder = 0xCAFEBABECAFEBABE;
   real_value = text_section->sh_size;
-  patch_site =
-      memmem(woody + note_segment->p_offset, stub_bin_len, &placeholder, 8);
+  patch_site = memmem(woody + file_size, stub_bin_len, &placeholder, 8);
   if (patch_site)
     memcpy(patch_site, &real_value, 8);
 
   placeholder = 0xAAAAAAAAAAAAAAAA;
   real_value = ehdr->e_entry;
-  patch_site =
-      memmem(woody + note_segment->p_offset, stub_bin_len, &placeholder, 8);
+  patch_site = memmem(woody + file_size, stub_bin_len, &placeholder, 8);
   if (patch_site)
     memcpy(patch_site, &real_value, 8);
 
   uint8_t key_placeholder[16] = {0xDE, 0xAD, 0xBE, 0xEF, 0xDE, 0xAD,
                                  0xBE, 0xEF, 0xDE, 0xAD, 0xBE, 0xEF,
                                  0xDE, 0xAD, 0xBE, 0xEF};
-  patch_site =
-      memmem(woody + note_segment->p_offset, stub_bin_len, key_placeholder, 16);
+  patch_site = memmem(woody + file_size, stub_bin_len, key_placeholder, 16);
   if (patch_site)
     memcpy(patch_site, key, 16);
 
@@ -230,7 +227,7 @@ void inject_stub(void *woody, Elf64_Phdr *note_segment, Elf64_Ehdr *ehdr,
   note_segment->p_paddr = 0xc000000;
   note_segment->p_filesz = stub_bin_len;
   note_segment->p_memsz = stub_bin_len;
-
+  note_segment->p_align = 0x1000;
   ehdr->e_entry = 0xc000000;
 }
 
@@ -247,6 +244,9 @@ int main(int argc, char **argv) {
   if (fstat(fd, &st) < 0)
     return (printf("Error: fstat failed\n"), close(fd), 1);
 
+  if (st.st_size < (off_t)sizeof(Elf64_Ehdr))
+    return (printf("Error: file too small\n"), close(fd), 1);
+
   void *map = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
   if (map == MAP_FAILED)
     return (printf("Error: mmap failed\n"), close(fd), 1);
@@ -258,18 +258,20 @@ int main(int argc, char **argv) {
     return (1);
   }
 
+  size_t page_size = 0x1000;
+  size_t aligned_offset = (st.st_size + page_size - 1) & ~(page_size - 1);
   // Writable version of binary
-  size_t output_size = st.st_size;
+  size_t output_size = aligned_offset + stub_bin_len;
   void *woody = malloc(output_size);
   if (!woody)
     return (printf("Woody malloc failed."), munmap(map, st.st_size), close(fd),
             1);
-  memcpy(woody, map, output_size);
+  memset(woody, 0, output_size);
+  memcpy(woody, map, st.st_size);
   // cleanup memory
   munmap(map, st.st_size);
   close(fd);
 
-  // new pointers
   ehdr = (Elf64_Ehdr *)woody;
   Elf64_Phdr *phdr = (Elf64_Phdr *)(woody + ehdr->e_phoff);
   Elf64_Shdr *shdr = (Elf64_Shdr *)(woody + ehdr->e_shoff);
@@ -308,7 +310,7 @@ int main(int argc, char **argv) {
   uint8_t key[16];
   rc4_encrypt(text_data, text_section->sh_size, key);
 
-  inject_stub(woody, note_segment, ehdr, text_section, key, 0);
+  inject_stub(woody, note_segment, ehdr, text_section, key, 0, aligned_offset);
 
   // write to disk
   int fd_output = open("woody", O_WRONLY | O_CREAT | O_TRUNC, 0755);

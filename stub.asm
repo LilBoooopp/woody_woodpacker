@@ -8,6 +8,7 @@ stub:
 after_string:
   pop rsi
 
+  ; write "....WOODY...."
   mov rax, 1
   mov rdi, 1
   mov rdx, 14
@@ -53,6 +54,19 @@ after_key:
   mov r13, 0xBADDCAFEBADDCAFE ; placeholder for inflate() address
   mov r14, 0xDEADBEEFDEADBEEF ; placeholder for text_data address
   mov r15, 0xCAFEBABECAFEBABE ; placeholder for text size
+
+  ; save original .text and size
+  mov r12, r14 ; r12 = original text address
+  mov rbx, r15 ; rbx = original text size
+
+  ; mprotext(text_addr, text_size, PROT_READ|PROT_WRITE|PROT_EXEC)
+  mov rdi, r14
+  and rdi, ~0xFFF ; round down to page boundary
+  mov rsi, r15
+  mov rdx, 7 ; RWX
+  mov rax, 10 ; mprotect
+  syscall
+
   mov r8, 0
   mov r9, 0
 
@@ -76,11 +90,21 @@ after_key:
   inc r14
   dec r15
   jnz .loop3
+
+
+  ; restore .text to R-X
+  mov rdi, r12
+  and rdi, ~0xFFF
+  mov rsi, rbx ; original text size
+  mov rdx, 5 ; R-X
+  mov rax, 10
+  syscall
   
   add rsp, 256 ; restore stack - undo the sub rsp, 256
   and rsp, ~0xF ; align to 16 bytes
 
-  call r13
+  ; TODO: call r13 once inflate_plt is patched in
+  ; call r13
 
   mov r11, 0xAAAAAAAAAAAAAAAA ; placeholder for e_entry
   jmp r11
