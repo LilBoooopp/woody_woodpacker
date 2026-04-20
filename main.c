@@ -6,13 +6,14 @@
 /*   By: cbopp <cbopp@student.42lausanne.ch>        +#+  +:+       +#+        */
 /*                                                +#+#+#+#+#+   +#+           */
 /*   Created: 2026/03/25 13:23:26 by cbopp             #+#    #+#             */
-/*   Updated: 2026/04/05 21:12:22 by cbopp            ###   ########.fr       */
+/*   Updated: 2026/04/17 15:43:19 by cbopp            ###   ########.fr       */
 /*                                                                            */
 /* ************************************************************************** */
 
 #include <elf.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -31,6 +32,38 @@
 //   Elf64_Xword sh_entsize;   // Entry size if section holds a table
 // } Elf64_Shdr;
 
+// typedef struct {
+//   unsigned char e_ident[16]; // Magic bytes + class (32/64), endianness, OS
+//   ABI Elf64_Half e_type;         // ET_EXEC (executable), ET_DYN (shared lib
+//   / PIE) Elf64_Half e_machine;      // Target ISA: EM_X86_64, EM_386, etc
+//   Elf64_Word e_version;      // ELF version (1)
+//   Elf64_Addr e_entry;        // Virtual address of entry point (_start)
+//   Elf64_Off e_phoff;         // Byte offset to program header table in file
+//   Elf64_Off e_shoff;         // Byte offset to section header table in file
+//   Elf64_Word e_flags;        // Architecture-specific flags (0 on x86_64)
+//   Elf64_Half e_ehsize;       // Size of this ELF header
+//   Elf64_Half e_phentsize;    // Size of one program header entry
+//   Elf64_Half e_phnum;        // Number of program header
+//   Elf64_Half e_shentsize;    // Size of one section header entry
+//   Elf64_Half e_shnum;        // Number of section header entries
+//   Elf64_Half e_shstrndx;     // Index of section name string table in shdr
+//   array
+// } Elf64_Ehdr;
+
+// typedef struct {
+//   Elf64_Word p_type;  // Secment type: PT_LOAD, PT_NOTE, PT_PHDR, etc.
+//   Elf64_Word p_flags; // Permissions: PF_R (read), PF_W (write), PF_X
+//   (exectue) Elf64_Off p_offset; // Byte offset of segment data within the ELF
+//   file Elf64_Addr p_vaddr; // Virtual address where segment is loaded at
+//   runtime Elf64_Addr p_paddr; // Physical address (irrelevant on modern
+//   systems) Elf64_Xword p_filesz; // Size of segment data in the file
+//   Elf64_Xword p_memsz;  // Size of segment in memory (memsz > filesz for
+//   .bss) Elf64_Xword p_align;  // Alighment requirement for loading
+// } Elf64_Phdr;
+
+/**
+ * @brief validates the ELF magic bytes at the start of file (0x7f)
+ */
 int check_mem(Elf64_Ehdr *elf) {
   if (memcmp(elf->e_ident, ELFMAG, SELFMAG) != 0) {
     printf("Error: Not an ELF file\n");
@@ -39,6 +72,10 @@ int check_mem(Elf64_Ehdr *elf) {
   return (0);
 }
 
+/**
+ * @brief Check for 64-bit
+ * e_ident[EI_CLASS] is ELFCLASS32 (1) or ELFCLASS64 (2).
+ */
 int check_64bit(Elf64_Ehdr *elf) {
   if (elf->e_ident[EI_CLASS] != ELFCLASS64) {
     printf("Error: Not a 64-bit ELF\n");
@@ -47,6 +84,10 @@ int check_64bit(Elf64_Ehdr *elf) {
   return (0);
 }
 
+/**
+ * @brief validates architecture.
+ * EM_X86_64 = 62
+ */
 int check_8664(Elf64_Ehdr *elf) {
   if (elf->e_machine != EM_X86_64) {
     printf("File architecture not supported. x86_64 only\n");
@@ -55,6 +96,9 @@ int check_8664(Elf64_Ehdr *elf) {
   return (0);
 }
 
+/**
+ * @brief Checks that file is executable or shared library.
+ */
 int check_exec(Elf64_Ehdr *elf) {
   if (elf->e_type != ET_EXEC && elf->e_type != ET_DYN) {
     printf("Error: Nt an executable\n");
@@ -80,10 +124,13 @@ int main(int argc, char **argv) {
     printf("Expected usage: ./woody_woodpacker <ELF binary>");
     return (1);
   }
+  // TODO: CHECK IF FAIL
   int fd = open(argv[1], O_RDONLY);
   struct stat st;
+  // TODO: CHECK IF FAIL
   fstat(fd, &st);
 
+  // TODO: CHECK IF FAIL
   void *map = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
   Elf64_Ehdr *ehdr = (Elf64_Ehdr *)map;
 
@@ -114,4 +161,24 @@ int main(int argc, char **argv) {
 
   void *text_data = map + text_section->sh_offset;
   // text_section->sh_size bytes starting here
+
+  // finding .note
+  Elf64_Phdr *note_segment = NULL;
+  for (int i = 0; i < ehdr->e_phnum; i++) {
+    if (phdr[i].p_type == PT_NOTE) {
+      note_segment = &phdr[i];
+      break;
+    }
+  }
+
+  // RW version of binary
+  size_t output_size = st.st_size;
+  void *woody = malloc(output_size);
+  if (!woody)
+    return (printf("Woody malloc failed."), 1);
+  memcpy(woody, map, output_size);
+
+  // cleanup memory
+  munmap(map, st.st_size);
+  close(fd);
 }
