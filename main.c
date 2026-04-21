@@ -6,10 +6,11 @@
 /*   By: cbopp <cbopp@student.42lausanne.ch>        +#+  +:+       +#+        */
 /*                                                +#+#+#+#+#+   +#+           */
 /*   Created: 2026/03/25 13:23:26 by cbopp             #+#    #+#             */
-/*   Updated: 2026/04/17 15:43:19 by cbopp            ###   ########.fr       */
+/*   Updated: 2026/04/20 00:00:40 by cbopp            ###   ########.fr       */
 /*                                                                            */
 /* ************************************************************************** */
 
+#include "stub.h"
 #include <elf.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -18,6 +19,9 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <zlib.h>
+
+#define KEY_SIZE 16
 
 // typedef struct {
 //   Elf64_Word sh_name;       // Index into string table
@@ -118,37 +122,161 @@ int check_elf(Elf64_Ehdr *elf) {
   return (ret);
 }
 
+/**
+ * @brief Key Scheduling Algorithm
+ * @params *s 256 byte array
+ * @params *key scrambles order of *s
+ * @params key_len
+ */
+void rc4_ksa(uint8_t *s, uint8_t *key, size_t key_len) {
+  for (int i = 0; i < 256; i++) {
+    s[i] = i;
+  }
+
+  int j = 0;
+  for (int i = 0; i < 256; i++) {
+    j = (j + s[i] + key[i % key_len]) % 256;
+
+    s[i] = s[i] ^ s[j];
+    s[j] = s[i] ^ s[j];
+    s[i] = s[i] ^ s[j];
+  }
+}
+
+/**
+ * @brief Pseudo-random key gen
+ * Generates keystream bytes by strring *s and then XOR keystream byte with data
+ * byte
+ */
+void rc4_prga(uint8_t *s, uint8_t *data, size_t data_len) {
+  int i = 0;
+  int j = 0;
+  for (int k = 0; (size_t)k < data_len; k++) {
+    i = (i + 1) % 256;
+    j = (j + s[i]) % 256;
+    s[i] = s[i] ^ s[j];
+    s[j] = s[i] ^ s[j];
+    s[i] = s[i] ^ s[j];
+    data[k] ^= s[(s[i] + s[j]) % 256];
+  }
+}
+
+void generate_key(uint8_t *key, size_t key_len) {
+  int fd = open("/dev/urandom", O_RDONLY);
+  if (fd < 0) {
+    printf("Error: could not open /dev/urandom\n");
+    return;
+  }
+  read(fd, key, key_len);
+  close(fd);
+  for (size_t i = 0; i < key_len; i++)
+    printf("%02X", key[i]);
+  printf("\n");
+}
+
+void rc4_encrypt(uint8_t *data, size_t data_len, uint8_t *key_out) {
+  uint8_t s[256];
+  uint8_t key[16];
+
+  generate_key(key, 16);
+  rc4_ksa(s, key, 16);
+  rc4_prga(s, data, data_len);
+  memcpy(key_out, key, 16);
+}
+
+void inject_stub(void *woody, Elf64_Phdr *note_segment, Elf64_Ehdr *ehdr,
+                 Elf64_Shdr *text_section, uint8_t *key, uint64_t inflate_plt,
+                 size_t file_size) {
+  note_segment->p_offset = file_size;
+  memcpy(woody + file_size, stub_bin, stub_bin_len);
+
+  uint64_t placeholder = 0xDEADBEEFDEADBEEF;
+  uint64_t real_value = text_section->sh_addr;
+  void *patch_site = memmem(woody + file_size, stub_bin_len, &placeholder, 8);
+  if (patch_site)
+    memcpy(patch_site, &real_value, 8);
+
+  placeholder = 0xBADDCAFEBADDCAFE;
+  real_value = inflate_plt;
+  patch_site = memmem(woody + file_size, stub_bin_len, &placeholder, 8);
+  if (patch_site)
+    memcpy(patch_site, &real_value, 8);
+
+  placeholder = 0xCAFEBABECAFEBABE;
+  real_value = text_section->sh_size;
+  patch_site = memmem(woody + file_size, stub_bin_len, &placeholder, 8);
+  if (patch_site)
+    memcpy(patch_site, &real_value, 8);
+
+  placeholder = 0xAAAAAAAAAAAAAAAA;
+  real_value = ehdr->e_entry;
+  patch_site = memmem(woody + file_size, stub_bin_len, &placeholder, 8);
+  if (patch_site)
+    memcpy(patch_site, &real_value, 8);
+
+  uint8_t key_placeholder[16] = {0xDE, 0xAD, 0xBE, 0xEF, 0xDE, 0xAD,
+                                 0xBE, 0xEF, 0xDE, 0xAD, 0xBE, 0xEF,
+                                 0xDE, 0xAD, 0xBE, 0xEF};
+  patch_site = memmem(woody + file_size, stub_bin_len, key_placeholder, 16);
+  if (patch_site)
+    memcpy(patch_site, key, 16);
+
+  note_segment->p_type = PT_LOAD;
+  note_segment->p_flags = PF_R | PF_X;
+  note_segment->p_vaddr = 0xc000000;
+  note_segment->p_paddr = 0xc000000;
+  note_segment->p_filesz = stub_bin_len;
+  note_segment->p_memsz = stub_bin_len;
+  note_segment->p_align = 0x1000;
+  ehdr->e_entry = 0xc000000;
+}
+
 int main(int argc, char **argv) {
   if (argc != 2) {
     printf("Not enough arguments.\n");
     printf("Expected usage: ./woody_woodpacker <ELF binary>");
     return (1);
   }
-  // TODO: CHECK IF FAIL
   int fd = open(argv[1], O_RDONLY);
+  if (fd < 0)
+    return (printf("Error: could not open file\n"), 1);
   struct stat st;
-  // TODO: CHECK IF FAIL
-  fstat(fd, &st);
+  if (fstat(fd, &st) < 0)
+    return (printf("Error: fstat failed\n"), close(fd), 1);
 
-  // TODO: CHECK IF FAIL
+  if (st.st_size < (off_t)sizeof(Elf64_Ehdr))
+    return (printf("Error: file too small\n"), close(fd), 1);
+
   void *map = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
-  Elf64_Ehdr *ehdr = (Elf64_Ehdr *)map;
+  if (map == MAP_FAILED)
+    return (printf("Error: mmap failed\n"), close(fd), 1);
 
+  Elf64_Ehdr *ehdr = (Elf64_Ehdr *)map;
   if (check_elf(ehdr)) {
     munmap(map, st.st_size);
     close(fd);
     return (1);
   }
 
-  // Program headers with ehdr->e_phnum entries
-  Elf64_Phdr *phdr = (Elf64_Phdr *)(map + ehdr->e_phoff);
+  size_t page_size = 0x1000;
+  size_t aligned_offset = (st.st_size + page_size - 1) & ~(page_size - 1);
+  // Writable version of binary
+  size_t output_size = aligned_offset + stub_bin_len;
+  void *woody = malloc(output_size);
+  if (!woody)
+    return (printf("Woody malloc failed."), munmap(map, st.st_size), close(fd),
+            1);
+  memset(woody, 0, output_size);
+  memcpy(woody, map, st.st_size);
+  // cleanup memory
+  munmap(map, st.st_size);
+  close(fd);
 
-  // Section headers with ehdr->e_shnum entries
-  Elf64_Shdr *shdr = (Elf64_Shdr *)(map + ehdr->e_shoff);
-
-  // get string tbale section
+  ehdr = (Elf64_Ehdr *)woody;
+  Elf64_Phdr *phdr = (Elf64_Phdr *)(woody + ehdr->e_phoff);
+  Elf64_Shdr *shdr = (Elf64_Shdr *)(woody + ehdr->e_shoff);
   Elf64_Shdr *strtab = &shdr[ehdr->e_shstrndx];
-  char *names = (char *)(map + strtab->sh_offset);
+  char *names = (char *)(woody + strtab->sh_offset);
 
   // finding .text
   Elf64_Shdr *text_section = NULL;
@@ -158,9 +286,11 @@ int main(int argc, char **argv) {
       break;
     }
   }
+  if (!text_section)
+    return (printf("Error: .text section not found\n"), free(woody), 1);
 
-  void *text_data = map + text_section->sh_offset;
   // text_section->sh_size bytes starting here
+  void *text_data = (uint8_t *)(woody + text_section->sh_offset);
 
   // finding .note
   Elf64_Phdr *note_segment = NULL;
@@ -170,15 +300,26 @@ int main(int argc, char **argv) {
       break;
     }
   }
+  if (!note_segment)
+    return (printf("Error: PT_NOTE segment not found\n"), free(woody), 1);
 
-  // RW version of binary
-  size_t output_size = st.st_size;
-  void *woody = malloc(output_size);
-  if (!woody)
-    return (printf("Woody malloc failed."), 1);
-  memcpy(woody, map, output_size);
+  /*
+   * TODO: call zlib_compress before encryption
+   */
 
-  // cleanup memory
-  munmap(map, st.st_size);
-  close(fd);
+  uint8_t key[16];
+  rc4_encrypt(text_data, text_section->sh_size, key);
+
+  inject_stub(woody, note_segment, ehdr, text_section, key, 0, aligned_offset);
+
+  // write to disk
+  int fd_output = open("woody", O_WRONLY | O_CREAT | O_TRUNC, 0755);
+  if (fd_output < 0)
+    return (printf("Error: Woody open() failed"), free(woody), 1);
+  if (write(fd_output, woody, output_size) < 0)
+    return (printf("Error: write() failed"), free(woody), close(fd_output), 1);
+  close(fd_output);
+
+  free(woody);
+  return (0);
 }
