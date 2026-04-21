@@ -44,3 +44,6 @@ build/
 compile_commands.json
 
 imgui
+/a.out
+/woody
+vgcore.*
