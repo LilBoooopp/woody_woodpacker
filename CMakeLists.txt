@@ -61,7 +61,7 @@ if (NASM_EXECUTABLE)
 		OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/stub.h
 		COMMAND xxd -i -n stub_bin ${CMAKE_CURRENT_BINARY_DIR}/stub.bin ${CMAKE_CURRENT_BINARY_DIR}/stub.h
 		DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/stub.bin
-		COMMENT "Génération de stub.h depuis stub.bin"
+		COMMENT "Create stub.h from stub.bin"
 	)
 
 else()
