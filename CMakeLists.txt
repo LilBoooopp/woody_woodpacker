@@ -13,6 +13,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 enable_language(ASM_NASM)
 find_program(XXD_EXECUTABLE xxd REQUIRED)
+find_program(NASM_EXECUTABLE nasm REQUIRED)
 
 if(UNIX
    AND NOT APPLE
@@ -45,29 +46,39 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GCC")
   add_compile_options(-Wall -Wextra -Werror)
 endif()
 
-find_program(NASM_EXECUTABLE nasm REQUIRED)
+if (NASM_EXECUTABLE)
+    message(STATUS "NASM found : ${NASM_EXECUTABLE}")
 
-add_custom_command(
-    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/stub.bin
-    COMMAND ${NASM_EXECUTABLE} -f bin
-            ${CMAKE_CURRENT_SOURCE_DIR}/stub.asm
-            -o ${CMAKE_CURRENT_BINARY_DIR}/stub.bin
-    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/stub.asm
-    COMMENT "Assembling stub.asm -> stub.bin"
-)
+    add_custom_command(
+        OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/stub.bin
+        COMMAND ${NASM_EXECUTABLE} -f bin ${CMAKE_CURRENT_SOURCE_DIR}/stub.asm
+                -o ${CMAKE_CURRENT_BINARY_DIR}/stub.bin
+        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/stub.asm
+		COMMENT "Compile stub.bin"
+    )
 
-add_custom_command(
-    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/stub.h
-    COMMAND xxd -i ${CMAKE_CURRENT_SOURCE_DIR}/stub.bin
-            ${CMAKE_CURRENT_BINARY_DIR}/stub.h
-    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/stub.bin
-)
+	add_custom_command(
+		OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/stub.h
+		COMMAND xxd -i -n stub_bin ${CMAKE_CURRENT_BINARY_DIR}/stub.bin ${CMAKE_CURRENT_BINARY_DIR}/stub.h
+		DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/stub.bin
+		COMMENT "Génération de stub.h depuis stub.bin"
+	)
+
+else()
+    message(FATAL_ERROR "NASM not found !")
+endif()
 
 # --------------------------
 # add files here
 # --------------------------
 
 set(SOURCES main.c)
-set(CMAKE_ASM_NASM_COMPILE_OBJECT nasm -f bin stub.asm -o stub.bin)
+
+add_custom_target(generate_stub ALL
+	DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/stub.h
+)
 
 add_executable(woody_woodpacker ${SOURCES})
+
+add_dependencies(woody_woodpacker generate_stub)
+target_include_directories(woody_woodpacker PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
