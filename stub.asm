@@ -146,8 +146,7 @@ after_key:
   syscall
   
   mov rdx, [rsp + 256]  ; restore rtld_fini before jumping to _start
-  add rsp, 264
-  and rsp, ~0xF
+  add rsp, 264          ; restore rsp exactly to ISP — glibc _start aligns stack itself
 
   ; TODO: call r13 once inflate_plt is patched in
   ; call r13
