@@ -137,9 +137,9 @@ void rc4_ksa(uint8_t *s, uint8_t *key, size_t key_len) {
   for (int i = 0; i < 256; i++) {
     j = (j + s[i] + key[i % key_len]) % 256;
 
-    s[i] = s[i] ^ s[j];
-    s[j] = s[i] ^ s[j];
-    s[i] = s[i] ^ s[j];
+    uint8_t tmp = s[i];
+    s[i] = s[j];
+    s[j] = tmp;
   }
 }
 
@@ -154,9 +154,9 @@ void rc4_prga(uint8_t *s, uint8_t *data, size_t data_len) {
   for (int k = 0; (size_t)k < data_len; k++) {
     i = (i + 1) % 256;
     j = (j + s[i]) % 256;
-    s[i] = s[i] ^ s[j];
-    s[j] = s[i] ^ s[j];
-    s[i] = s[i] ^ s[j];
+    uint8_t tmp = s[i];
+    s[i] = s[j];
+    s[j] = tmp;
     data[k] ^= s[(s[i] + s[j]) % 256];
   }
 }
