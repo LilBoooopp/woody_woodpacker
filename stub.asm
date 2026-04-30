@@ -2,6 +2,7 @@ BITS 64
 global stub
 
 stub:
+  mov r15, rdx ; save rdx (rtld_fini) before write syscall clobbers it
   mov rbp, rsp ; save initial RSP for auxv walk
   call after_string
   db "....WOODY....", 10
@@ -21,7 +22,8 @@ after_key:
   pop rcx
 
   ; KSA init S-box
-  sub rsp, 256
+  sub rsp, 264         ; 256 for S-box + 8 to save rdx (rtld_fini)
+  mov [rsp + 256], r15 ; save rtld_fini (captured in r15 before write syscall)
   xor r8, r8
 
   ; s[i] = i (until 256)
@@ -75,6 +77,8 @@ after_key:
   jz .no_at_phdr
   cmp rax, 3 ; AT_PHDR = 3
   je .got_at_phdr
+  add rdi, 16
+  jmp .find_at_phdr
 
 .got_at_phdr:
   mov rdi, [rdi + 8] ; rdi = AT_PHDR runtime address
@@ -107,7 +111,7 @@ after_key:
   xor r9, r9
 
 .loop3:
-  inc r8d
+  inc r8b                   ; i = (i+1) % 256 — must wrap at 8 bits, not 32
   movzx r9, r9b
   add r9b, byte [rsp + r8]
 
@@ -141,8 +145,9 @@ after_key:
   mov rax, 10
   syscall
   
-  add rsp, 256 ; restore stack - undo the sub rsp, 256
-  and rsp, ~0xF ; align to 16 bytes
+  mov rdx, [rsp + 256]  ; restore rtld_fini before jumping to _start
+  add rsp, 264
+  and rsp, ~0xF
 
   ; TODO: call r13 once inflate_plt is patched in
   ; call r13
