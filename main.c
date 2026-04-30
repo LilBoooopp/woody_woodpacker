@@ -82,7 +82,7 @@ int check_mem(Elf64_Ehdr *elf) {
  */
 int check_64bit(Elf64_Ehdr *elf) {
   if (elf->e_ident[EI_CLASS] != ELFCLASS64) {
-    printf("Error: Not a 64-bit ELF\n");
+      printf("Error: Not a 64-bit ELF\n");
     return (1);
   }
   return (0);
@@ -268,6 +268,7 @@ int main(int argc, char **argv) {
             1);
   memset(woody, 0, output_size);
   memcpy(woody, map, st.st_size);
+  msync(woody, st.st_size + stub_bin_len, MS_SYNC);
   // cleanup memory
   munmap(map, st.st_size);
   close(fd);

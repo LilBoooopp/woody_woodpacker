@@ -2,6 +2,7 @@ BITS 64
 global stub
 
 stub:
+  mov rbp, rsp ; save initial RSP for auxv walk
   call after_string
   db "....WOODY....", 10
 
@@ -19,9 +20,9 @@ after_string:
 after_key:
   pop rcx
 
-  ; KSA
+  ; KSA init S-box
   sub rsp, 256
-  mov r8, 0
+  xor r8, r8
 
   ; s[i] = i (until 256)
 .loop:
@@ -31,8 +32,8 @@ after_key:
   jne .loop
 
   ; r8 = i, r9b = j, rcx = key_pointer, rsp = S-box
-  mov r8, 0
-  mov r9, 0
+  xor r8, r8
+  xor r9, r9
 .loop2:
   mov al, byte [rsp + r8] ; al = S[i]
   mov r10, r8
@@ -51,24 +52,59 @@ after_key:
   jne .loop2
 
   ; PRGA
-  mov r13, 0xBADDCAFEBADDCAFE ; placeholder for inflate() address
+  mov r13, 0xBADDCAFEBADDCAFE ; placeholder for inflate() plt address
   mov r14, 0xDEADBEEFDEADBEEF ; placeholder for text_data address
   mov r15, 0xCAFEBABECAFEBABE ; placeholder for text size
 
-  ; save original .text and size
-  mov r12, r14 ; r12 = original text address
-  mov rbx, r15 ; rbx = original text size
+  ; get load_base via auxv AT_PHDR
+  ; initial stack at rbp: [argc][argv][NULL][envp][NULL][auxv]
+  mov rax, [rbp] ; argc
+  lea rdi, [rbp + rax*8 + 16] ; &envp[0]: skip 8(argc) + argc*8(argv) + 8(NULL)
 
-  ; mprotext(text_addr, text_size, PROT_READ|PROT_WRITE|PROT_EXEC)
+.skip_envp:
+  cmp qword [rdi], 0
+  je .envp_done
+  add rdi, 8
+  jmp .skip_envp
+.envp_done:
+  add rdi, 8 ; skip NULL -> &auxv[0]
+
+.find_at_phdr:
+  mov rax, [rdi]
+  test rax, rax ; AT_NULL = 0?
+  jz .no_at_phdr
+  cmp rax, 3 ; AT_PHDR = 3
+  je .got_at_phdr
+
+.got_at_phdr:
+  mov rdi, [rdi + 8] ; rdi = AT_PHDR runtime address
+  mov rax, 0xFEEDFACEFEEDFACE ; placeholder: PT_PHDR link-timep p_vaddr
+  sub rdi, rax ; load_base = AT_PHDR_runtime - PT_PHDR_link_vaddr
+  jmp .have_load_base
+
+.no_at_phdr:
+  xor rdi, rdi ; load_base = 0 fallback
+
+.have_load_base:
+  mov rbp, rdi ; rbp = load_base (survives all subsequent syscalls)
+  add r14, rbp ; r14 = actual runtime text address
+
+  mov r12, r14 ; r12 = runtime text start (saved, survives syscall)
+
+  
+  ; mprotect(page_aligned(text_start), size + page_offset, RWX)
   mov rdi, r14
-  and rdi, ~0xFFF ; round down to page boundary
   mov rsi, r15
+  mov rax, rdi
+  and rax, 0xFFF  ; page offset of text start
+  add rsi, rax    ; extend size to cover from page boundary to text end
+  and rdi, ~0xFFF ; round down to page boundary
   mov rdx, 7 ; RWX
   mov rax, 10 ; mprotect
   syscall
 
-  mov r8, 0
-  mov r9, 0
+  xor r8, r8
+  xor r9, r9
 
 .loop3:
   inc r8d
@@ -93,9 +129,14 @@ after_key:
 
 
   ; restore .text to R-X
+  ; size = r14 (text_end after loop) - r12 (text_start) - avoids relying on rbx
   mov rdi, r12
+  mov rsi, r14
+  sub rsi, r12
+  mov rax, rdi
+  and rax, 0xFFF  ; page offset of text start
+  add rsi, rax    ; extend size to cover from page boundary to text end
   and rdi, ~0xFFF
-  mov rsi, rbx ; original text size
   mov rdx, 5 ; R-X
   mov rax, 10
   syscall
@@ -107,4 +148,5 @@ after_key:
   ; call r13
 
   mov r11, 0xAAAAAAAAAAAAAAAA ; placeholder for e_entry
+  add r11, rbp ; + load_base = actual runtime entry
   jmp r11
