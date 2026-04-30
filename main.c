@@ -82,7 +82,7 @@ int check_mem(Elf64_Ehdr *elf) {
  */
 int check_64bit(Elf64_Ehdr *elf) {
   if (elf->e_ident[EI_CLASS] != ELFCLASS64) {
-    printf("Error: Not a 64-bit ELF\n");
+      printf("Error: Not a 64-bit ELF\n");
     return (1);
   }
   return (0);
@@ -137,9 +137,9 @@ void rc4_ksa(uint8_t *s, uint8_t *key, size_t key_len) {
   for (int i = 0; i < 256; i++) {
     j = (j + s[i] + key[i % key_len]) % 256;
 
-    s[i] = s[i] ^ s[j];
-    s[j] = s[i] ^ s[j];
-    s[i] = s[i] ^ s[j];
+    uint8_t tmp = s[i];
+    s[i] = s[j];
+    s[j] = tmp;
   }
 }
 
@@ -154,9 +154,9 @@ void rc4_prga(uint8_t *s, uint8_t *data, size_t data_len) {
   for (int k = 0; (size_t)k < data_len; k++) {
     i = (i + 1) % 256;
     j = (j + s[i]) % 256;
-    s[i] = s[i] ^ s[j];
-    s[j] = s[i] ^ s[j];
-    s[i] = s[i] ^ s[j];
+    uint8_t tmp = s[i];
+    s[i] = s[j];
+    s[j] = tmp;
     data[k] ^= s[(s[i] + s[j]) % 256];
   }
 }
@@ -186,7 +186,7 @@ void rc4_encrypt(uint8_t *data, size_t data_len, uint8_t *key_out) {
 
 void inject_stub(void *woody, Elf64_Phdr *note_segment, Elf64_Ehdr *ehdr,
                  Elf64_Shdr *text_section, uint8_t *key, uint64_t inflate_plt,
-                 size_t file_size) {
+                 size_t file_size, uint64_t phdr_link_vaddr) {
   note_segment->p_offset = file_size;
   memcpy(woody + file_size, stub_bin, stub_bin_len);
 
@@ -210,6 +210,12 @@ void inject_stub(void *woody, Elf64_Phdr *note_segment, Elf64_Ehdr *ehdr,
 
   placeholder = 0xAAAAAAAAAAAAAAAA;
   real_value = ehdr->e_entry;
+  patch_site = memmem(woody + file_size, stub_bin_len, &placeholder, 8);
+  if (patch_site)
+    memcpy(patch_site, &real_value, 8);
+
+  placeholder = 0xFEEDFACEFEEDFACE;
+  real_value = phdr_link_vaddr;
   patch_site = memmem(woody + file_size, stub_bin_len, &placeholder, 8);
   if (patch_site)
     memcpy(patch_site, &real_value, 8);
@@ -268,6 +274,7 @@ int main(int argc, char **argv) {
             1);
   memset(woody, 0, output_size);
   memcpy(woody, map, st.st_size);
+  msync(woody, st.st_size + stub_bin_len, MS_SYNC);
   // cleanup memory
   munmap(map, st.st_size);
   close(fd);
@@ -292,13 +299,14 @@ int main(int argc, char **argv) {
   // text_section->sh_size bytes starting here
   void *text_data = (uint8_t *)(woody + text_section->sh_offset);
 
-  // finding .note
+  // finding .note and PT_PHDR (for load_base computation in stub)
   Elf64_Phdr *note_segment = NULL;
+  uint64_t phdr_link_vaddr = ehdr->e_phoff;  // fallback: works for PIE
   for (int i = 0; i < ehdr->e_phnum; i++) {
-    if (phdr[i].p_type == PT_NOTE) {
+    if (phdr[i].p_type == PT_NOTE && !note_segment)
       note_segment = &phdr[i];
-      break;
-    }
+    if (phdr[i].p_type == PT_PHDR)
+      phdr_link_vaddr = phdr[i].p_vaddr;
   }
   if (!note_segment)
     return (printf("Error: PT_NOTE segment not found\n"), free(woody), 1);
@@ -310,7 +318,8 @@ int main(int argc, char **argv) {
   uint8_t key[16];
   rc4_encrypt(text_data, text_section->sh_size, key);
 
-  inject_stub(woody, note_segment, ehdr, text_section, key, 0, aligned_offset);
+  inject_stub(woody, note_segment, ehdr, text_section, key, 0, aligned_offset,
+              phdr_link_vaddr);
 
   // write to disk
   int fd_output = open("woody", O_WRONLY | O_CREAT | O_TRUNC, 0755);
