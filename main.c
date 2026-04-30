@@ -174,14 +174,37 @@ void generate_key(uint8_t *key, size_t key_len) {
   printf("\n");
 }
 
-void rc4_encrypt(uint8_t *data, size_t data_len, uint8_t *key_out) {
-  uint8_t s[256];
-  uint8_t key[16];
+int hex_char_to_int(char c) {
+  if (c >= '0' && c <= '9') return (c - '0');
+  if (c >= 'a' && c <= 'f') return (c - 'a' + 10);
+  if (c >= 'A' && c <= 'F') return (c - 'A' + 10);
+  return (-1);
+}
 
-  generate_key(key, 16);
-  rc4_ksa(s, key, 16);
+int parse_custom_key(const char *hex_str, uint8_t *key_out) {
+  if (strlen(hex_str) != 32) {
+    printf("Error: Custom key must be exactly 32 hex characters (16 bytes).\n");
+    return (1);
+  }
+
+  for (int i = 0; i < 16; i++) {
+    int high = hex_char_to_int(hex_str[i * 2]);
+    int low = hex_char_to_int(hex_str[i * 2 + 1]);
+    
+    if (high == -1 || low == -1) {
+      printf("Error: Invalid hex character in custom key.\n");
+      return (1);
+    }
+    key_out[i] = (high << 4) | low;
+  }
+  return (0);
+}
+
+void rc4_encrypt(uint8_t *data, size_t data_len, uint8_t *key, size_t key_len) {
+  uint8_t s[256];
+
+  rc4_ksa(s, key, key_len);
   rc4_prga(s, data, data_len);
-  memcpy(key_out, key, 16);
 }
 
 void inject_stub(void *woody, Elf64_Phdr *note_segment, Elf64_Ehdr *ehdr,
@@ -238,9 +261,8 @@ void inject_stub(void *woody, Elf64_Phdr *note_segment, Elf64_Ehdr *ehdr,
 }
 
 int main(int argc, char **argv) {
-  if (argc != 2) {
-    printf("Not enough arguments.\n");
-    printf("Expected usage: ./woody_woodpacker <ELF binary>");
+  if (argc < 2 && argc > 3) {
+    printf("Expected usage: ./woody_woodpacker <ELF binary> [custom hex key]\n");
     return (1);
   }
   int fd = open(argv[1], O_RDONLY);
@@ -316,7 +338,24 @@ int main(int argc, char **argv) {
    */
 
   uint8_t key[16];
-  rc4_encrypt(text_data, text_section->sh_size, key);
+
+  if (argc == 3) {
+    if (parse_custom_key(argv[2], key) != 0) {
+      free(woody);
+      return (1);
+    }
+    printf("Using custom key: ");
+  } else {
+    generate_key(key, 16);
+    printf("Generated random key: ");
+  }
+
+  for (int i = 0; i < 16; i++) {
+    printf("%02X", key[i]);
+  }
+  printf("\n");
+  
+  rc4_encrypt(text_data, text_section->sh_size, key, 16);
 
   inject_stub(woody, note_segment, ehdr, text_section, key, 0, aligned_offset,
               phdr_link_vaddr);
