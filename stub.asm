@@ -54,7 +54,6 @@ after_key:
   jne .loop2
 
   ; PRGA
-  mov r13, 0xBADDCAFEBADDCAFE ; placeholder for inflate() plt address
   mov r14, 0xDEADBEEFDEADBEEF ; placeholder for text_data address
   mov r15, 0xCAFEBABECAFEBABE ; placeholder for text size
 
@@ -131,6 +130,30 @@ after_key:
   dec r15
   jnz .loop3
 
+  ; mmap(NULL, uncompressed_size, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0)
+  xor rdi, rdi ; addr = NULL
+  mov rsi, r13 ; length = uncompressed_size
+  mov rdx, 3 ; PROT_READ|PROT_WRITE
+  mov r10, 0x22 ; MAP_PRIVATE|MAP_ANONYMOUS
+  mov r8, -1 ; fd = -1
+  xor r9, r9 ; offset = 0
+  mov rax, 9 ; mmap
+  syscall
+  mov rbx, rax ; dst
+
+  ; TODO: aplib decompress
+
+  ; memcpy: copy rbx back to r12, length = r13
+  mov rdi, r12
+  mov rsi, rbx
+  mov rcx, r13
+  rep movsb
+
+  ; munmap(rbx, uncompressed_size)
+  mov rdi, rbx
+  mov rsi, r13
+  mov rax, 11 ; munmap
+  syscall
 
   ; restore .text to R-X
   ; size = r14 (text_end after loop) - r12 (text_start) - avoids relying on rbx
@@ -142,14 +165,11 @@ after_key:
   add rsi, rax    ; extend size to cover from page boundary to text end
   and rdi, ~0xFFF
   mov rdx, 5 ; R-X
-  mov rax, 10
+  mov rax, 10 ; mprotect
   syscall
   
   mov rdx, [rsp + 256]  ; restore rtld_fini before jumping to _start
   add rsp, 264          ; restore rsp exactly to ISP — glibc _start aligns stack itself
-
-  ; TODO: call r13 once inflate_plt is patched in
-  ; call r13
 
   mov r11, 0xAAAAAAAAAAAAAAAA ; placeholder for e_entry
   add r11, rbp ; + load_base = actual runtime entry
