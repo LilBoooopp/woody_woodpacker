@@ -131,6 +131,7 @@ after_key:
   jnz .loop3
 
   ; mmap(NULL, uncompressed_size, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0)
+  push r12 ; save original text_start
   xor rdi, rdi ; addr = NULL
   mov rsi, r13 ; length = uncompressed_size
   mov rdx, 3 ; PROT_READ|PROT_WRITE
@@ -139,9 +140,66 @@ after_key:
   xor r9, r9 ; offset = 0
   mov rax, 9 ; mmap
   syscall
+  pop r10 ; original text_start
   mov rbx, rax ; dst
+  mov r11, rax ; r11 = mmap base
 
   ; TODO: aplib decompress
+  ; r12 = src 
+  ; rbx = dst (output buffer)
+  ; r8b = tag, r9b = bitcount, r14d = R0, r15d = lwm
+
+  mov r14d, 0xFFFFFFFF
+  xor r15d, r15d ; lwm = 0
+  xor r9d, r9d ; bitcount = 0
+
+.decomp_loop:
+  call .getbit
+  jnc .lit ; bit=0 -> literal
+
+  call .getbit
+  jnc .block ; bit=0 -> 10 = block copy
+
+  call .getbit
+  jnc .short ; bit=0 -> 110 = short match
+
+  ; 111 -> write literal zero byte
+  mov byte [rbx], 0
+  inc rbx
+  xor r15d, r15d
+  jmp .decomp_loop
+
+.lit:
+  mov al, [r12]
+  inc r12
+  mov [rbx], al
+  inc rbx
+  xor r15d, r15d
+  jmp .decomp_loop
+
+.short:
+  movzx eax, byte [r12]
+  inc r12
+  mov ecx, eax
+  shr ecx, 1 ; offset = byte >> 1 (7 bits)
+  jz .decomp_done ; offset == 0 -> end of stream
+  and eax, 1
+  add eax, 2 ; len = (byte & 1) + 2 -> 2 or 3
+  mov r14d, ecx ; R0 = offset
+  mov r15d, 1 ; lwm = 1
+  mov rsi, rbx
+  sub rsi, rcx ; rsi = match src
+.short_copy:
+  mov dl, [rsi]
+  mov [rbx], dl
+  inc rsi
+  inc rbx
+  dec eax
+  jnz .short_copy
+  jmp .decomp_loop
+
+.block:
+  call .getgamma ; eax = gamma value
 
   ; memcpy: copy rbx back to r12, length = r13
   mov rdi, r12
