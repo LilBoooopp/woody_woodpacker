@@ -261,7 +261,7 @@ void inject_stub(void *woody, Elf64_Phdr *note_segment, Elf64_Ehdr *ehdr,
 }
 
 int main(int argc, char **argv) {
-  if (argc < 2 && argc > 3) {
+  if (argc < 2 || argc > 3) {
     printf("Expected usage: ./woody_woodpacker <ELF binary> [custom hex key]\n");
     return (1);
   }
