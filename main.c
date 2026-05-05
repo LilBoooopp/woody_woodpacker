@@ -319,7 +319,7 @@ int main(int argc, char **argv) {
     return (printf("Error: .text section not found\n"), free(woody), 1);
 
   // text_section->sh_size bytes starting here
-  void *text_data = (uint8_t *)(woody + text_section->sh_offset);
+  uint8_t *text_data = woody + text_section->sh_offset;
 
   // finding .note and PT_PHDR (for load_base computation in stub)
   Elf64_Phdr *note_segment = NULL;
