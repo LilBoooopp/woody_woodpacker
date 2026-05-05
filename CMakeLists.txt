@@ -42,9 +42,7 @@ elseif(APPLE AND CMAKE_BUILD_TYPE MATCHES "Debug")
   message(WARNING "Compiling for Macos with debug options")
 endif()
 
-if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GCC")
-  add_compile_options(-Wall -Wextra -Werror)
-endif()
+add_compile_options(-Wall -Wextra -Werror -g)
 
 if (NASM_EXECUTABLE)
     message(STATUS "NASM found : ${NASM_EXECUTABLE}")
