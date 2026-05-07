@@ -56,6 +56,7 @@ after_key:
   ; PRGA
   mov r14, 0xDEADBEEFDEADBEEF ; placeholder for text_data address
   mov r15, 0xCAFEBABECAFEBABE ; placeholder for text size
+  mov r13, 0xBEEFCAFEBEEFCAFE ; uncompressed size
 
   ; get load_base via auxv AT_PHDR
   ; initial stack at rbp: [argc][argv][NULL][envp][NULL][auxv]
@@ -159,7 +160,7 @@ after_key:
   ; get next flag bit
   test r9b, r9b
   jnz .lzss_have_bit
-  move r8b, [r12] ; load new flag byte
+  mov r8b, [r12] ; load new flag byte
   inc r12
   mov r9b, 8
 .lzss_have_bit:
@@ -200,22 +201,21 @@ after_key:
 
 .lzss_done:
   ; memcpy: copy rbx back to r12, length = r13
-  mov rdi, r12
-  mov rsi, rbx
+  mov rdi, r10
+  mov rsi, r11
   mov rcx, r13
   rep movsb
 
   ; munmap(rbx, uncompressed_size)
-  mov rdi, rbx
+  mov rdi, r11
   mov rsi, r13
   mov rax, 11 ; munmap
   syscall
 
   ; restore .text to R-X
   ; size = r14 (text_end after loop) - r12 (text_start) - avoids relying on rbx
-  mov rdi, r12
-  mov rsi, r14
-  sub rsi, r12
+  mov rdi, r10
+  mov rsi, r13
   mov rax, rdi
   and rax, 0xFFF  ; page offset of text start
   add rsi, rax    ; extend size to cover from page boundary to text end
