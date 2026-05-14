@@ -6,7 +6,7 @@
 /*   By: cbopp <cbopp@student.42lausanne.ch>        +#+  +:+       +#+        */
 /*                                                +#+#+#+#+#+   +#+           */
 /*   Created: 2026/03/25 13:23:26 by cbopp             #+#    #+#             */
-/*   Updated: 2026/05/11 19:25:55 by ilyanar          ###   LAUSANNE.ch       */
+/*   Updated: 2026/05/14 11:01:36 by ilyanar          ###   LAUSANNE.ch       */
 /*                                                                            */
 /* ************************************************************************** */
 
@@ -22,7 +22,7 @@
 #include <unistd.h>
 #include <zlib.h>
 #include <curses.h>
-#include "libft.h"
+// #include "libft.h"
 
 #define KEY_SIZE 16
 
@@ -253,7 +253,7 @@ void DeleteNode(int p, LZSS_t *lz)
 	lz->dad[p] = INDEX;
 }
 
-static size_t LZSS_compression(uint8_t *text_data, size_t text_len){
+static uint8_t* LZSS_compression(uint8_t *text_data, size_t text_len, size_t *new_len){
 
 	LZSS_t lz;
 	bzero(&lz, sizeof(LZSS_t));
@@ -317,13 +317,14 @@ static size_t LZSS_compression(uint8_t *text_data, size_t text_len){
 			code_buf_ptr = mask = 1;
 		}
 		last_match_length = lz.match_length;
-		for (i = 0; i < last_match_length &&
-				in_index < text_len; i++) {
-
+		for (i = 0;
+			 i < last_match_length && in_index < text_len;
+			 i++) {
+			uint8_t c = text_data[in_index++];
 			DeleteNode(s, &lz);
-			lz.text_buf[s] = lz.last_buffer[out_index];
+			lz.text_buf[s] = c;
 			if (s < MATCH_LEN - 1)
-				lz.text_buf[s + WINDOW_SIZE] = lz.last_buffer[out_index++];
+				lz.text_buf[s + WINDOW_SIZE] = c;
 			s = (s + 1) & (WINDOW_SIZE - 1);
 			r = (r + 1) & (WINDOW_SIZE - 1);
 			InsertNode(r, &lz);
@@ -351,9 +352,8 @@ static size_t LZSS_compression(uint8_t *text_data, size_t text_len){
 	printf("Out: %ld bytes\n", lz.codesize);
 	printf("Out/In: %.3f\n", (double)lz.codesize / lz.textsize);
 
-	
-	text_data = lz.last_buffer;
-	return lz.codesize;
+	*new_len = lz.codesize;
+	return lz.last_buffer;
 }
 
 /**
@@ -507,7 +507,7 @@ int main(int argc, char **argv) {
             1);
   memset(woody, 0, output_size);
   memcpy(woody, map, st.st_size);
-  msync(woody, st.st_size + stub_bin_len, MS_SYNC);
+  // msync(woody, st.st_size + stub_bin_len, MS_SYNC);
   // cleanup memory
   munmap(map, st.st_size);
   close(fd);
@@ -544,10 +544,11 @@ int main(int argc, char **argv) {
   if (!note_segment)
     return (printf("Error: PT_NOTE segment not found\n"), free(woody), 1);
 
-  size_t new_len = LZSS_compression(text_data, text_section->sh_size);
+  size_t new_len = 0;
 
+  uint8_t *compressed = LZSS_compression(text_data, text_section->sh_size, &new_len);
+  (void)compressed;
   uint8_t key[16];
-
   if (argc == 3) {
     if (parse_custom_key(argv[2], key) != 0) {
       free(woody);
@@ -564,7 +565,8 @@ int main(int argc, char **argv) {
   }
   printf("\n");
   
-  rc4_encrypt(text_data, new_len, key, 16);
+  rc4_encrypt(text_data, text_section->sh_size, key, 16);
+  // rc4_encrypt(text_data, new_len, key, 16);
 
   inject_stub(woody, note_segment, ehdr, text_section, key, 0, aligned_offset,
               phdr_link_vaddr);
