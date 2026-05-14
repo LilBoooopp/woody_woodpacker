@@ -6,7 +6,7 @@
 /*   By: cbopp <cbopp@student.42lausanne.ch>        +#+  +:+       +#+        */
 /*                                                +#+#+#+#+#+   +#+           */
 /*   Created: 2026/03/25 13:23:26 by cbopp             #+#    #+#             */
-/*   Updated: 2026/05/14 11:01:36 by ilyanar          ###   LAUSANNE.ch       */
+/*   Updated: 2026/05/14 12:04:59 by ilyanar          ###   LAUSANNE.ch       */
 /*                                                                            */
 /* ************************************************************************** */
 
@@ -311,7 +311,6 @@ static uint8_t* LZSS_compression(uint8_t *text_data, size_t text_len, size_t *ne
 		}
 		if ((mask <<= 1) == 0){
 			for (i = 0; i < code_buf_ptr && out_index < text_len; i++)
-				// putc(code_buf[i], outfile);
 				lz.last_buffer[out_index++] = code_buf[i];
 			lz.codesize += code_buf_ptr;
 			code_buf_ptr = mask = 1;
@@ -340,17 +339,15 @@ static uint8_t* LZSS_compression(uint8_t *text_data, size_t text_len, size_t *ne
 				InsertNode(r, &lz);
 		}
 	} while (len > 0);
-	printf("test2\n");
 	if (code_buf_ptr > 1){
 		for (i = 0; i < code_buf_ptr; i++)
-			// putc(code_buf[i], outfile);
 			lz.last_buffer[out_index++] = code_buf[i];
 		lz.codesize += code_buf_ptr;
 	}
 
-	printf("In : %ld bytes\n", lz.textsize);
-	printf("Out: %ld bytes\n", lz.codesize);
-	printf("Out/In: %.3f\n", (double)lz.codesize / lz.textsize);
+	printf("[LZSS - Compression]\n Before: %ld bytes\n", lz.textsize);
+	printf(" After: %ld bytes\n", lz.codesize);
+	printf(" Out/In: -%.3f\%%\n\n", 100 - ((double)lz.codesize / lz.textsize) * 100);
 
 	*new_len = lz.codesize;
 	return lz.last_buffer;
@@ -380,9 +377,9 @@ void generate_key(uint8_t *key, size_t key_len) {
   }
   read(fd, key, key_len);
   close(fd);
-  for (size_t i = 0; i < key_len; i++)
-    printf("%02X", key[i]);
-  printf("\n");
+  // for (size_t i = 0; i < key_len; i++)
+  //   printf("%02X", key[i]);
+  // printf("\n");
 }
 
 int hex_char_to_int(char c) {
@@ -548,6 +545,7 @@ int main(int argc, char **argv) {
 
   uint8_t *compressed = LZSS_compression(text_data, text_section->sh_size, &new_len);
   (void)compressed;
+  // free(compressed);
   uint8_t key[16];
   if (argc == 3) {
     if (parse_custom_key(argv[2], key) != 0) {
@@ -565,8 +563,8 @@ int main(int argc, char **argv) {
   }
   printf("\n");
   
-  rc4_encrypt(text_data, text_section->sh_size, key, 16);
-  // rc4_encrypt(text_data, new_len, key, 16);
+  // rc4_encrypt(text_data, text_section->sh_size, key, 16);
+  rc4_encrypt(compressed, new_len, key, 16);
 
   inject_stub(woody, note_segment, ehdr, text_section, key, 0, aligned_offset,
               phdr_link_vaddr);
