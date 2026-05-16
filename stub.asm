@@ -96,9 +96,10 @@ after_key:
   mov r12, r14 ; r12 = runtime text start (saved, survives syscall)
 
   
-  ; mprotect(page_aligned(text_start), size + page_offset, RWX)
+  ; mprotect(page_aligned(text_start), uncompressed_size + page_offset, RWX)
+  ; must cover full uncompressed range — decomp memcpy writes that many bytes
   mov rdi, r14
-  mov rsi, r15
+  mov rsi, r13
   mov rax, rdi
   and rax, 0xFFF  ; page offset of text start
   add rsi, rax    ; extend size to cover from page boundary to text end
@@ -166,7 +167,7 @@ after_key:
 .lzss_have_bit:
   shl r8b, 1 ; MSB -> CF
   dec r9b
-  jc .lzss_match
+  jnc .lzss_match ; bit=1 → literal, bit=0 → match
 
 .lzss_literal:
   mov al, [r12]

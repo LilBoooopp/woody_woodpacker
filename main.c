@@ -285,7 +285,8 @@ static uint8_t* LZSS_compression(uint8_t *text_data, size_t text_len, size_t *ne
 		lz.dad[j] = INDEX;
 
 	code_buf[0] = 0;
-	code_buf_ptr = mask = 1;
+	code_buf_ptr = 1;
+	mask = 0x80;
 	s = 0;
 	r = WINDOW_SIZE - MATCH_LEN;
 	for (i = s; i < r; i++)
