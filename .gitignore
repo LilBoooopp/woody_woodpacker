@@ -47,3 +47,4 @@ imgui
 /a.out
 /woody
 vgcore.*
+.asm-lsp.toml

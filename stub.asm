@@ -54,9 +54,9 @@ after_key:
   jne .loop2
 
   ; PRGA
-  mov r13, 0xBADDCAFEBADDCAFE ; placeholder for inflate() plt address
   mov r14, 0xDEADBEEFDEADBEEF ; placeholder for text_data address
   mov r15, 0xCAFEBABECAFEBABE ; placeholder for text size
+  mov r13, 0xBEEFCAFEBEEFCAFE ; uncompressed size
 
   ; get load_base via auxv AT_PHDR
   ; initial stack at rbp: [argc][argv][NULL][envp][NULL][auxv]
@@ -96,9 +96,10 @@ after_key:
   mov r12, r14 ; r12 = runtime text start (saved, survives syscall)
 
   
-  ; mprotect(page_aligned(text_start), size + page_offset, RWX)
+  ; mprotect(page_aligned(text_start), uncompressed_size + page_offset, RWX)
+  ; must cover full uncompressed range — decomp memcpy writes that many bytes
   mov rdi, r14
-  mov rsi, r15
+  mov rsi, r13
   mov rax, rdi
   and rax, 0xFFF  ; page offset of text start
   add rsi, rax    ; extend size to cover from page boundary to text end
@@ -131,25 +132,101 @@ after_key:
   dec r15
   jnz .loop3
 
+  ; mmap(NULL, uncompressed_size, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0)
+  push r12 ; save original text_start
+  xor rdi, rdi ; addr = NULL
+  mov rsi, r13 ; length = uncompressed_size
+  mov rdx, 3 ; PROT_READ|PROT_WRITE
+  mov r10, 0x22 ; MAP_PRIVATE|MAP_ANONYMOUS
+  mov r8, -1 ; fd = -1
+  xor r9, r9 ; offset = 0
+  mov rax, 9 ; mmap
+  syscall
+  pop r10 ; original text_start
+  mov rbx, rax ; dst
+  mov r11, rax ; r11 = mmap base
+
+  ; TODO: lzss decomp
+  ; r12 = src 
+  ; rbx = dst (output buffer)
+
+  xor r9d, r9d ; bitcount = 0
+
+.lzss_loop:
+  mov rax, rbx
+  sub rax, r11 ; bytes written = dst - mmap_base
+  cmp rax, r13 ; done?
+  jae .lzss_done
+
+  ; get next flag bit
+  test r9b, r9b
+  jnz .lzss_have_bit
+  mov r8b, [r12] ; load new flag byte
+  inc r12
+  mov r9b, 8
+.lzss_have_bit:
+  shl r8b, 1 ; MSB -> CF
+  dec r9b
+  jnc .lzss_match ; bit=1 → literal, bit=0 → match
+
+.lzss_literal:
+  mov al, [r12]
+  inc r12
+  mov [rbx], al
+  inc rbx
+  jmp .lzss_loop
+
+.lzss_match:
+  movzx eax, byte [r12] ; byte1
+  inc r12
+  movzx edx, byte [r12] ; byte 2
+  inc r12
+  mov ecx, eax
+  shl ecx, 4
+  mov esi, edx
+  shr esi, 4
+  or ecx, esi ; ecx = offset
+  and edx, 0xF
+  add edx, 3 ; edx = length
+  mov rsi, rbx
+  sub rsi, rcx ; rsi = dst - offset
+.lzss_copy:
+  mov al, [rsi]
+  mov [rbx], al
+  inc rsi
+  inc rbx
+  dec edx
+  jnz .lzss_copy
+  jmp .lzss_loop
+
+
+.lzss_done:
+  ; memcpy: copy rbx back to r12, length = r13
+  mov rdi, r10
+  mov rsi, r11
+  mov rcx, r13
+  rep movsb
+
+  ; munmap(rbx, uncompressed_size)
+  mov rdi, r11
+  mov rsi, r13
+  mov rax, 11 ; munmap
+  syscall
 
   ; restore .text to R-X
   ; size = r14 (text_end after loop) - r12 (text_start) - avoids relying on rbx
-  mov rdi, r12
-  mov rsi, r14
-  sub rsi, r12
+  mov rdi, r10
+  mov rsi, r13
   mov rax, rdi
   and rax, 0xFFF  ; page offset of text start
   add rsi, rax    ; extend size to cover from page boundary to text end
   and rdi, ~0xFFF
   mov rdx, 5 ; R-X
-  mov rax, 10
+  mov rax, 10 ; mprotect
   syscall
   
   mov rdx, [rsp + 256]  ; restore rtld_fini before jumping to _start
   add rsp, 264          ; restore rsp exactly to ISP — glibc _start aligns stack itself
-
-  ; TODO: call r13 once inflate_plt is patched in
-  ; call r13
 
   mov r11, 0xAAAAAAAAAAAAAAAA ; placeholder for e_entry
   add r11, rbp ; + load_base = actual runtime entry

@@ -42,7 +42,7 @@ elseif(APPLE AND CMAKE_BUILD_TYPE MATCHES "Debug")
   message(WARNING "Compiling for Macos with debug options")
 endif()
 
-add_compile_options(-Wall -Wextra -Werror -g)
+add_compile_options(-Wall -Wextra -Werror)
 
 if (NASM_EXECUTABLE)
     message(STATUS "NASM found : ${NASM_EXECUTABLE}")
@@ -76,7 +76,22 @@ add_custom_target(generate_stub ALL
 	DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/stub.h
 )
 
+# add_custom_command(
+# 	OUTPUT ${CMAKE_CURRENT_SOURCE_DIR}/libft/libft.a
+# 	COMMAND ${CMAKE_MAKE_PROGRAM} -C ${CMAKE_CURRENT_SOURCE_DIR}/libft/
+# 	DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/libft/Makefile
+# 	COMMENT "construct libft.a"
+# )
+#
+# add_custom_target(libft_target
+#     DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/libft/libft.a
+# )
+#
 add_executable(woody_woodpacker ${SOURCES})
 
 add_dependencies(woody_woodpacker generate_stub)
+# add_dependencies(woody_woodpacker libft_target)
+
+# target_link_libraries(woody_woodpacker PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/libft/libft.a)
+# target_include_directories(woody_woodpacker PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/libft/libs/)
 target_include_directories(woody_woodpacker PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
