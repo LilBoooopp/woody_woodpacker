@@ -431,7 +431,7 @@ void rc4_encrypt(uint8_t *data, size_t data_len, uint8_t *key, size_t key_len) {
 }
 
 void inject_stub(void *woody, Elf64_Phdr *note_segment, Elf64_Ehdr *ehdr,
-                 Elf64_Shdr *text_section, uint8_t *key, uint64_t inflate_plt,
+                 Elf64_Shdr *text_section, uint8_t *key,
                  size_t file_size, uint64_t phdr_link_vaddr, size_t compressed_len, size_t uncompressed_len) {
   note_segment->p_offset = file_size;
   memcpy(woody + file_size, stub_bin, stub_bin_len);
@@ -439,12 +439,6 @@ void inject_stub(void *woody, Elf64_Phdr *note_segment, Elf64_Ehdr *ehdr,
   uint64_t placeholder = 0xDEADBEEFDEADBEEF;
   uint64_t real_value = text_section->sh_addr;
   void *patch_site = memmem(woody + file_size, stub_bin_len, &placeholder, 8);
-  if (patch_site)
-    memcpy(patch_site, &real_value, 8);
-
-  placeholder = 0xBADDCAFEBADDCAFE;
-  real_value = inflate_plt;
-  patch_site = memmem(woody + file_size, stub_bin_len, &placeholder, 8);
   if (patch_site)
     memcpy(patch_site, &real_value, 8);
 
@@ -589,7 +583,7 @@ int main(int argc, char **argv) {
 	memcpy(text_data, compressed, new_len);
 	free(compressed);
 
-  inject_stub(woody, note_segment, ehdr, text_section, key, 0, aligned_offset,
+  inject_stub(woody, note_segment, ehdr, text_section, key, aligned_offset,
               phdr_link_vaddr, new_len, text_section->sh_size);
 
   // write to disk

@@ -145,7 +145,7 @@ after_key:
   mov rbx, rax ; dst
   mov r11, rax ; r11 = mmap base
 
-  ; lzss decomp
+  ; TODO: lzss decomp
   ; r12 = src 
   ; rbx = dst (output buffer)
 
