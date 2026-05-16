@@ -6,7 +6,7 @@
 /*   By: cbopp <cbopp@student.42lausanne.ch>        +#+  +:+       +#+        */
 /*                                                +#+#+#+#+#+   +#+           */
 /*   Created: 2026/03/25 13:23:26 by cbopp             #+#    #+#             */
-/*   Updated: 2026/04/20 00:00:40 by cbopp            ###   ########.fr       */
+/*   Updated: 2026/05/14 12:04:59 by ilyanar          ###   LAUSANNE.ch       */
 /*                                                                            */
 /* ************************************************************************** */
 
@@ -15,13 +15,39 @@
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <ctype.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <zlib.h>
+#include <curses.h>
+// #include "libft.h"
 
 #define KEY_SIZE 16
+
+//--------------------------------------------
+/// LZSS compression
+//-----------------------------------------
+#define WINDOW_SIZE 4096
+#define MATCH_LEN 18
+#define THRESHOLD 2
+#define INDEX WINDOW_SIZE
+
+typedef struct LZSS_s{
+	unsigned long int textsize;
+	unsigned long int codesize;
+	unsigned long int printcount;
+	unsigned char text_buf[WINDOW_SIZE + MATCH_LEN - 1];
+	int	match_position;
+	int match_length;
+	int lson[WINDOW_SIZE + 1];
+	int rson[WINDOW_SIZE + 257];
+	int dad[WINDOW_SIZE + 1];
+
+	uint8_t *last_buffer;
+	uint8_t *text_data;
+} LZSS_t;
 
 // typedef struct {
 //   Elf64_Word sh_name;       // Index into string table
@@ -143,15 +169,212 @@ void rc4_ksa(uint8_t *s, uint8_t *key, size_t key_len) {
   }
 }
 
+void InsertNode(int r, LZSS_t *lz)
+{
+	int i = 0;
+	int cmp = 1;
+	unsigned char  *key = &lz->text_buf[r];
+	int p = WINDOW_SIZE + 1 + key[0];
+
+	lz->rson[r] = lz->lson[r] = INDEX;
+	lz->match_length = 0;
+
+	while (true){
+		if (cmp >= 0) {
+			if (lz->rson[p] != INDEX)
+				p = lz->rson[p];
+			else {
+				lz->rson[p] = r;
+				lz->dad[r] = p;
+				return;
+			}
+		} else {
+			if (lz->lson[p] != INDEX)
+				p = lz->lson[p];
+			else {
+				lz->lson[p] = r;
+				lz->dad[r] = p;
+				return;
+			}
+		}
+		for (i = 1; i < MATCH_LEN; i++)
+			if ((cmp = key[i] - lz->text_buf[p + i]) != 0)
+				break;
+		if (i > lz->match_length){
+			lz->match_position = p;
+			if ((lz->match_length = i) >= MATCH_LEN)
+				break;
+		}
+	}
+	lz->dad[r] = lz->dad[p];
+	lz->lson[r] = lz->lson[p];
+	lz->rson[r] = lz->rson[p];
+	lz->dad[lz->lson[p]] = r;
+	lz->dad[lz->rson[p]] = r;
+
+	if (lz->rson[lz->dad[p]] == p)
+		lz->rson[lz->dad[p]] = r;
+	else
+		lz->lson[lz->dad[p]] = r;
+	lz->dad[p] = INDEX;
+}
+
+void DeleteNode(int p, LZSS_t *lz)
+{
+	int  q;
+	
+	if (lz->dad[p] == INDEX)
+		return;
+	if (lz->rson[p] == INDEX)
+		q = lz->lson[p];
+	else if (lz->lson[p] == INDEX)
+		q = lz->rson[p];
+	else {
+		q = lz->lson[p];
+		if (lz->rson[q] != INDEX) {
+			do {
+				q = lz->rson[q];
+			}
+			while (lz->rson[q] != INDEX);
+			
+			lz->rson[lz->dad[q]] = lz->lson[q];
+			lz->dad[lz->lson[q]] = lz->dad[q];
+			lz->lson[q] = lz->lson[p];
+			lz->dad[lz->lson[p]] = q;
+		}
+		lz->rson[q] = lz->rson[p];
+		lz->dad[lz->rson[p]] = q;
+	}
+	lz->dad[q] = lz->dad[p];
+	if (lz->rson[lz->dad[p]] == p)
+		lz->rson[lz->dad[p]] = q;
+	else
+		lz->lson[lz->dad[p]] = q;
+	lz->dad[p] = INDEX;
+}
+
+static uint8_t* LZSS_compression(uint8_t *text_data, size_t text_len, size_t *new_len){
+
+	LZSS_t lz;
+	bzero(&lz, sizeof(LZSS_t));
+	lz.last_buffer = malloc(text_len);
+	bzero(lz.last_buffer, text_len);
+	lz.text_data = text_data;
+
+	lz.textsize = 0;
+	lz.codesize = 0;
+	lz.printcount = 0;
+	lz.match_position = 0;
+	lz.match_length = 0;
+
+	int  i = 0;
+	int len = 0;
+	int r = 0;
+	int s = 0;
+	int last_match_length = 0;
+	int code_buf_ptr = 0;
+	unsigned char code_buf[17] = {0};
+	unsigned char mask = 0x80;
+	size_t in_index = 0;
+	size_t out_index = 0;
+	size_t decomp_out = 0;
+
+	for (size_t j = WINDOW_SIZE + 1; j <= WINDOW_SIZE + 256; j++)
+		lz.rson[j] = INDEX;
+	for (size_t j = 0; j < WINDOW_SIZE; j++)
+		lz.dad[j] = INDEX;
+
+	code_buf[0] = 0;
+	code_buf_ptr = mask = 1;
+	s = 0;
+	r = WINDOW_SIZE - MATCH_LEN;
+	for (i = s; i < r; i++)
+		lz.text_buf[i] = ' ';
+	for (len = 0; len < MATCH_LEN && in_index < text_len ; len++)
+		lz.text_buf[r + len] = text_data[in_index++];
+
+	if ((lz.textsize = len) == 0)
+		return 0;
+
+	for (i = 1; i <= MATCH_LEN; i++)
+		InsertNode(r - i, &lz);
+	InsertNode(r, &lz);
+
+	do {
+		if (lz.match_length > len)
+			lz.match_length = len;
+		int back_dist = (r - lz.match_position) & (WINDOW_SIZE - 1);
+		int valid_match = (lz.match_length > THRESHOLD) && (back_dist != 0) && ((size_t)back_dist <= decomp_out);
+		if (!valid_match) {
+			// emit literal byte
+			lz.match_length = 1;
+			code_buf[0] |= mask;
+			code_buf[code_buf_ptr++] = lz.text_buf[r];
+			decomp_out++;
+		} else {
+			// emit match: byte1 = back_dist >> 4 (high 8 bits)
+			//							byte2 = ((back_dist & 0xF) << 4) | (len - 3)
+			code_buf[code_buf_ptr++] = (unsigned char)((back_dist >> 4) & 0xFF);
+			code_buf[code_buf_ptr++] = (unsigned char)(((back_dist & 0x0F) << 4) | (lz.match_length - (THRESHOLD + 1)));
+			decomp_out += lz.match_length;
+		}
+
+		// flush when all 8 token slots are used
+		mask >>=1; // shr: MSB first
+		if (mask == 0) {
+			for (i = 0; i < code_buf_ptr && out_index < text_len; i++)
+				lz.last_buffer[out_index++] = code_buf[i];
+			lz.codesize += code_buf_ptr;
+			code_buf[0] = 0;
+			code_buf_ptr = 1;
+			mask = 0x80; // reset to MSB
+		}
+
+		last_match_length = lz.match_length;
+		for (i = 0; i < last_match_length && in_index < text_len; i++) {
+			uint8_t c = text_data[in_index++];
+			DeleteNode(s, &lz);
+			lz.text_buf[s] = c;
+			if (s < MATCH_LEN - 1)
+				lz.text_buf[s + WINDOW_SIZE] = c;
+			s = (s + 1) & (WINDOW_SIZE - 1);
+			r = (r + 1) & (WINDOW_SIZE - 1);
+			InsertNode(r, &lz);
+		}
+		if ((lz.textsize += i) > lz.printcount) {
+			lz.printcount += 1024;
+		}
+		while (i++ < last_match_length) {
+			DeleteNode(s, &lz);
+			s = (s + 1) & (WINDOW_SIZE - 1);
+			r = (r + 1) & (WINDOW_SIZE - 1);
+			if (--len)
+				InsertNode(r, &lz);
+		}
+	} while (len > 0);
+
+	// flush any remaining tokens in the last partial block
+	if (code_buf_ptr > 1){
+		for (i = 0; i < code_buf_ptr; i++)
+			lz.last_buffer[out_index++] = code_buf[i];
+		lz.codesize += code_buf_ptr;
+	}
+
+	printf("[LZSS - Compression]\n Before: %ld bytes\n", lz.textsize);
+	printf(" After: %ld bytes\n", lz.codesize);
+	printf(" Out/In: -%.3f\%%\n\n", 100 - ((double)lz.codesize / lz.textsize) * 100);
+
+	*new_len = lz.codesize;
+	return lz.last_buffer;
+}
+
 /**
  * @brief Pseudo-random key gen
  * Generates keystream bytes by strring *s and then XOR keystream byte with data
  * byte
  */
 void rc4_prga(uint8_t *s, uint8_t *data, size_t data_len) {
-  int i = 0;
-  int j = 0;
-  for (int k = 0; (size_t)k < data_len; k++) {
+  for (size_t k = 0, i = 0, j = 0; k < data_len; k++) {
     i = (i + 1) % 256;
     j = (j + s[i]) % 256;
     uint8_t tmp = s[i];
@@ -169,9 +392,9 @@ void generate_key(uint8_t *key, size_t key_len) {
   }
   read(fd, key, key_len);
   close(fd);
-  for (size_t i = 0; i < key_len; i++)
-    printf("%02X", key[i]);
-  printf("\n");
+  // for (size_t i = 0; i < key_len; i++)
+  //   printf("%02X", key[i]);
+  // printf("\n");
 }
 
 int hex_char_to_int(char c) {
@@ -209,7 +432,7 @@ void rc4_encrypt(uint8_t *data, size_t data_len, uint8_t *key, size_t key_len) {
 
 void inject_stub(void *woody, Elf64_Phdr *note_segment, Elf64_Ehdr *ehdr,
                  Elf64_Shdr *text_section, uint8_t *key, uint64_t inflate_plt,
-                 size_t file_size, uint64_t phdr_link_vaddr) {
+                 size_t file_size, uint64_t phdr_link_vaddr, size_t compressed_len, size_t uncompressed_len) {
   note_segment->p_offset = file_size;
   memcpy(woody + file_size, stub_bin, stub_bin_len);
 
@@ -226,7 +449,7 @@ void inject_stub(void *woody, Elf64_Phdr *note_segment, Elf64_Ehdr *ehdr,
     memcpy(patch_site, &real_value, 8);
 
   placeholder = 0xCAFEBABECAFEBABE;
-  real_value = text_section->sh_size;
+  real_value = compressed_len;
   patch_site = memmem(woody + file_size, stub_bin_len, &placeholder, 8);
   if (patch_site)
     memcpy(patch_site, &real_value, 8);
@@ -242,6 +465,12 @@ void inject_stub(void *woody, Elf64_Phdr *note_segment, Elf64_Ehdr *ehdr,
   patch_site = memmem(woody + file_size, stub_bin_len, &placeholder, 8);
   if (patch_site)
     memcpy(patch_site, &real_value, 8);
+
+  placeholder = 0xBEEFCAFEBEEFCAFE;
+  real_value = uncompressed_len;
+  patch_site = memmem(woody + file_size, stub_bin_len, &placeholder, 8);
+  if (patch_site)
+  	memcpy(patch_site, &real_value, 8);
 
   uint8_t key_placeholder[16] = {0xDE, 0xAD, 0xBE, 0xEF, 0xDE, 0xAD,
                                  0xBE, 0xEF, 0xDE, 0xAD, 0xBE, 0xEF,
@@ -296,7 +525,7 @@ int main(int argc, char **argv) {
             1);
   memset(woody, 0, output_size);
   memcpy(woody, map, st.st_size);
-  msync(woody, st.st_size + stub_bin_len, MS_SYNC);
+  // msync(woody, st.st_size + stub_bin_len, MS_SYNC);
   // cleanup memory
   munmap(map, st.st_size);
   close(fd);
@@ -319,7 +548,7 @@ int main(int argc, char **argv) {
     return (printf("Error: .text section not found\n"), free(woody), 1);
 
   // text_section->sh_size bytes starting here
-  uint8_t *text_data = woody + text_section->sh_offset;
+  uint8_t *text_data = (uint8_t *)(woody + text_section->sh_offset);
 
   // finding .note and PT_PHDR (for load_base computation in stub)
   Elf64_Phdr *note_segment = NULL;
@@ -333,12 +562,7 @@ int main(int argc, char **argv) {
   if (!note_segment)
     return (printf("Error: PT_NOTE segment not found\n"), free(woody), 1);
 
-  /*
-   * TODO: call zlib_compress before encryption
-   */
-
   uint8_t key[16];
-
   if (argc == 3) {
     if (parse_custom_key(argv[2], key) != 0) {
       free(woody);
@@ -355,10 +579,18 @@ int main(int argc, char **argv) {
   }
   printf("\n");
   
-  rc4_encrypt(text_data, text_section->sh_size, key, 16);
+  size_t new_len = 0;
+  uint8_t *compressed = LZSS_compression(text_data, text_section->sh_size, &new_len);
+  if (!compressed)
+  	return (printf("LZSS failed\n"), free(woody), 1);
+
+  // rc4_encrypt(text_data, text_section->sh_size, key, 16);
+  rc4_encrypt(compressed, new_len, key, 16);
+	memcpy(text_data, compressed, new_len);
+	free(compressed);
 
   inject_stub(woody, note_segment, ehdr, text_section, key, 0, aligned_offset,
-              phdr_link_vaddr);
+              phdr_link_vaddr, new_len, text_section->sh_size);
 
   // write to disk
   int fd_output = open("woody", O_WRONLY | O_CREAT | O_TRUNC, 0755);
