@@ -22,7 +22,8 @@
 #include <unistd.h>
 #include <zlib.h>
 #include <curses.h>
-// #include "libft.h"
+
+#define DEBUG 0
 
 #define KEY_SIZE 16
 
@@ -361,9 +362,12 @@ static uint8_t* LZSS_compression(uint8_t *text_data, size_t text_len, size_t *ne
 		lz.codesize += code_buf_ptr;
 	}
 
-	printf("[LZSS - Compression]\n Before: %ld bytes\n", lz.textsize);
-	printf(" After: %ld bytes\n", lz.codesize);
-	printf(" Out/In: -%.3f\%%\n\n", 100 - ((double)lz.codesize / lz.textsize) * 100);
+	if (DEBUG)
+	{
+		printf("[LZSS - Compression]\n Before: %ld bytes\n", lz.textsize);
+		printf(" After: %ld bytes\n", lz.codesize);
+		printf(" Out/In: -%.3f\%%\n\n", 100 - ((double)lz.codesize / lz.textsize) * 100);
+	}
 
 	*new_len = lz.codesize;
 	return lz.last_buffer;
@@ -520,7 +524,7 @@ int main(int argc, char **argv) {
             1);
   memset(woody, 0, output_size);
   memcpy(woody, map, st.st_size);
-  // msync(woody, st.st_size + stub_bin_len, MS_SYNC);
+  msync(woody, st.st_size + stub_bin_len, MS_SYNC);
   // cleanup memory
   munmap(map, st.st_size);
   close(fd);
