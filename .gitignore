@@ -48,3 +48,7 @@ imgui
 /woody
 vgcore.*
 .asm-lsp.toml
+
+stub.bin
+stub.h
+woody_woodpacker
