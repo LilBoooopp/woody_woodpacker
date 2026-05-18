@@ -431,6 +431,96 @@ void rc4_encrypt(uint8_t *data, size_t data_len, uint8_t *key, size_t key_len) {
   rc4_prga(s, data, data_len);
 }
 
+/**
+ * Removes the page-aligned stale tail of .text freed by LZSS compression.
+ *
+ * After in-place compression the .text file region looks like:
+ *   [0,            compressed_len)  — encrypted compressed payload  (live)
+ *   [compressed_len, sh_size)       — leftover original bytes       (dead)
+ *
+ * We cut a page-aligned 'delta' from that dead tail, slide all later file
+ * content left by delta, then update every ELF offset that referenced
+ * anything past the cut window.  Virtual addresses (p_vaddr / sh_addr) are
+ * NOT touched — the runtime layout is unchanged.
+ *
+ * The containing PT_LOAD's p_filesz shrinks by delta; p_memsz is left alone
+ * so the kernel still maps enough virtual memory for the stub to decompress
+ * the original .text into at runtime.
+ *
+ * Returns bytes removed, or 0 if savings are less than one page.
+ */
+static size_t shrink_text_segment(void *woody, size_t content_size,
+                                  Elf64_Ehdr *ehdr, Elf64_Shdr *text_section,
+                                  size_t compressed_len)
+{
+  const size_t page_size = 0x1000;
+
+  if (compressed_len >= text_section->sh_size)
+    return 0;
+
+  // Round savings DOWN to whole pages so that every LOAD segment that shifts
+  // still satisfies p_offset ≡ p_vaddr (mod p_align).
+  size_t raw_delta = text_section->sh_size - compressed_len;
+  size_t delta     = raw_delta & ~(page_size - 1);
+  if (delta == 0)
+    return 0;
+
+  // [cut_start, cut_end) is the file window that will be removed.
+  size_t cut_end   = text_section->sh_offset + text_section->sh_size;
+  size_t cut_start = cut_end - delta;
+
+  // Locate the PT_LOAD segment that contains .text.
+  Elf64_Phdr *phdr = (Elf64_Phdr *)(woody + ehdr->e_phoff);
+  Elf64_Phdr *text_load = NULL;
+  for (int i = 0; i < ehdr->e_phnum; i++) {
+    Elf64_Phdr *p = &phdr[i];
+    if (p->p_type == PT_LOAD
+        && text_section->sh_offset >= p->p_offset
+        && text_section->sh_offset <  p->p_offset + p->p_filesz) {
+      text_load = p;
+      break;
+    }
+  }
+  if (!text_load)
+    return 0;
+
+  // .text: on-disk size shrinks.  The runtime (uncompressed) size is passed
+  // to the stub via its own patched placeholder — not read from sh_size.
+  text_section->sh_size -= delta;
+
+  // Containing LOAD: p_filesz shrinks so fewer bytes are read from disk;
+  // p_memsz stays so the full virtual range is available for decompression.
+  text_load->p_filesz -= delta;
+
+  // Shift file offsets of every section header past the cut window.
+  Elf64_Shdr *shdr = (Elf64_Shdr *)(woody + ehdr->e_shoff);
+  for (int i = 0; i < ehdr->e_shnum; i++) {
+    if (shdr[i].sh_offset >= cut_end)
+      shdr[i].sh_offset -= delta;
+  }
+
+  // Shift file offsets of program headers past the cut window (not vaddrs).
+  for (int i = 0; i < ehdr->e_phnum; i++) {
+    if (phdr[i].p_offset >= cut_end)
+      phdr[i].p_offset -= delta;
+  }
+
+  // Shift the ELF section-header table pointer.
+  if (ehdr->e_shoff >= cut_end)
+    ehdr->e_shoff -= delta;
+
+  // Program headers sit near the file start; this guard is rarely true.
+  if (ehdr->e_phoff >= cut_end)
+    ehdr->e_phoff -= delta;
+
+  // Squeeze the cut window out of the buffer.
+  size_t tail = content_size - cut_end;
+  memmove(woody + cut_start, woody + cut_end, tail);
+  memset(woody + content_size - delta, 0, delta);
+
+  return delta;
+}
+
 void inject_stub(void *woody, Elf64_Phdr *note_segment, Elf64_Ehdr *ehdr,
                  Elf64_Shdr *text_section, uint8_t *key,
                  size_t file_size, uint64_t phdr_link_vaddr, size_t compressed_len, size_t uncompressed_len) {
@@ -531,11 +621,14 @@ int main(int argc, char **argv) {
   Elf64_Shdr *strtab = &shdr[ehdr->e_shstrndx];
   char *names = (char *)(woody + strtab->sh_offset);
 
-  // finding .text
+  // finding .text — also save its index so we can refresh the pointer after
+  // shrink_text_segment moves the shdr table inside the buffer.
   Elf64_Shdr *text_section = NULL;
+  int text_section_idx = -1;
   for (int i = 0; i < ehdr->e_shnum; i++) {
     if (strcmp(names + shdr[i].sh_name, ".text") == 0) {
       text_section = &shdr[i];
+      text_section_idx = i;
       break;
     }
   }
@@ -574,18 +667,37 @@ int main(int argc, char **argv) {
   }
   printf("\n");
   
-  size_t new_len = 0;
-  uint8_t *compressed = LZSS_compression(text_data, text_section->sh_size, &new_len);
-  if (!compressed)
-  	return (printf("LZSS failed\n"), free(woody), 1);
+  // Save original .text byte count before any modification.
+  // The stub needs this to know how many bytes to decompress into at runtime.
+  size_t uncompressed_len = text_section->sh_size;
 
-  // rc4_encrypt(text_data, text_section->sh_size, key, 16);
+  size_t new_len = 0;
+  uint8_t *compressed = LZSS_compression(text_data, uncompressed_len, &new_len);
+  if (!compressed)
+    return (printf("LZSS failed\n"), free(woody), 1);
+
   rc4_encrypt(compressed, new_len, key, 16);
-	memcpy(text_data, compressed, new_len);
-	free(compressed);
+  memcpy(text_data, compressed, new_len);
+  free(compressed);
+
+  // Shrink the output file by cutting the stale .text tail freed by compression.
+  // delta is page-aligned, so all PT_LOAD alignment constraints remain valid.
+  size_t delta = shrink_text_segment(woody, aligned_offset, ehdr, text_section, new_len);
+  if (delta > 0) {
+    // aligned_offset was already page-aligned; subtracting a page multiple keeps it so.
+    aligned_offset -= delta;
+    output_size = aligned_offset + stub_bin_len;
+
+    // shrink_text_segment memmoved the shdr table — refresh any pointer into it.
+    shdr = (Elf64_Shdr *)(woody + ehdr->e_shoff);
+    text_section = &shdr[text_section_idx];
+
+    printf("[Shrink]\n Removed: %zu bytes\n New packed size: ~%zu bytes\n\n",
+           delta, output_size);
+  }
 
   inject_stub(woody, note_segment, ehdr, text_section, key, aligned_offset,
-              phdr_link_vaddr, new_len, text_section->sh_size);
+              phdr_link_vaddr, new_len, uncompressed_len);
 
   // write to disk
   int fd_output = open("woody", O_WRONLY | O_CREAT | O_TRUNC, 0755);

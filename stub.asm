@@ -1,233 +1,270 @@
 BITS 64
 global stub
 
+; ────────────────────────────────────────────────────────────────────────────
+; Stable register map (safe across syscalls; all are callee-saved):
+;   rbp = load_base
+;   r13 = uncompressed_len
+;   r14 = compressed_len
+;   r15 = text_start (runtime .text virtual address)
+;   rbx = decrypted_buf base (anonymous mmap; RC4 plaintext / LZSS input)
+;
+; NOTE: the `syscall` instruction clobbers rcx (← RIP) and r11 (← RFLAGS).
+;       Do NOT use r11 or rcx to hold values that must survive a syscall.
+;
+; Stack frame (after sub rsp, 272):
+;   [rsp +   0 .. 255]  RC4 S-box (256 bytes)
+;   [rsp + 256 .. 263]  saved rtld_fini
+;   [rsp + 264 .. 271]  decomp_buf base (must survive multiple syscalls)
+; ────────────────────────────────────────────────────────────────────────────
+
 stub:
-  mov r15, rdx ; save rdx (rtld_fini) before write syscall clobbers it
-  mov rbp, rsp ; save initial RSP for auxv walk
-  call after_string
+  mov r12, rdx          ; stash rtld_fini (rdx) before any syscall touches it
+  mov rbp, rsp          ; anchor for auxv walk
+
+  ; ── print "....WOODY...." ────────────────────────────────────────────────
+  call .after_woody_str
   db "....WOODY....", 10
-
-after_string:
+.after_woody_str:
   pop rsi
-
-  ; write "....WOODY...."
-  mov rax, 1
+  mov rax, 1            ; sys_write
   mov rdi, 1
   mov rdx, 14
   syscall
 
-  call after_key
-  db 0xDE, 0xAD, 0xBE, 0xEF, 0xDE, 0xAD, 0xBE, 0xEF, 0xDE, 0xAD, 0xBE, 0xEF, 0xDE, 0xAD, 0xBE, 0xEF ; 16-byte placeholder for S
-after_key:
-  pop rcx
+  ; ── capture the RC4 key ─────────────────────────────────────────────────
+  call .after_key
+  db 0xDE, 0xAD, 0xBE, 0xEF, 0xDE, 0xAD, 0xBE, 0xEF  ; 16-byte placeholder
+  db 0xDE, 0xAD, 0xBE, 0xEF, 0xDE, 0xAD, 0xBE, 0xEF  ; patched at pack time
+.after_key:
+  pop rcx               ; rcx = pointer to 16-byte key
 
-  ; KSA init S-box
-  sub rsp, 264         ; 256 for S-box + 8 to save rdx (rtld_fini)
-  mov [rsp + 256], r15 ; save rtld_fini (captured in r15 before write syscall)
-  xor r8, r8
+  ; ── load patched constants ───────────────────────────────────────────────
+  mov r15, 0xDEADBEEFDEADBEEF  ; .text sh_addr   (link-time vaddr, patched)
+  mov r14, 0xCAFEBABECAFEBABE  ; compressed_len   (patched)
+  mov r13, 0xBEEFCAFEBEEFCAFE  ; uncompressed_len (patched)
 
-  ; s[i] = i (until 256)
-.loop:
-  mov byte [rsp + r8], r8b
-  inc r8
-  cmp r8, 256
-  jne .loop
-
-  ; r8 = i, r9b = j, rcx = key_pointer, rsp = S-box
-  xor r8, r8
-  xor r9, r9
-.loop2:
-  mov al, byte [rsp + r8] ; al = S[i]
-  mov r10, r8
-  and r10, 0x0F ; r10 = i % 16
-  add al, byte [rcx + r10] ; al = S[i] + key[i % s]
-  add r9b, al ; j = (j + S[i] + key[i % 16]) % 256 (wraps naturally)
-
-  ; swap bytes
-  mov al, byte [rsp + r8]
-  mov bl, byte [rsp + r9]
-  mov byte [rsp + r8], bl
-  mov byte [rsp + r9], al
-  
-  inc r8d
-  cmp r8d, 256
-  jne .loop2
-
-  ; PRGA
-  mov r14, 0xDEADBEEFDEADBEEF ; placeholder for text_data address
-  mov r15, 0xCAFEBABECAFEBABE ; placeholder for text size
-  mov r13, 0xBEEFCAFEBEEFCAFE ; uncompressed size
-
-  ; get load_base via auxv AT_PHDR
-  ; initial stack at rbp: [argc][argv][NULL][envp][NULL][auxv]
-  mov rax, [rbp] ; argc
-  lea rdi, [rbp + rax*8 + 16] ; &envp[0]: skip 8(argc) + argc*8(argv) + 8(NULL)
-
+  ; ── derive load_base from AT_PHDR in the auxiliary vector ────────────────
+  mov rax, [rbp]
+  lea rdi, [rbp + rax*8 + 16]  ; &envp[0]
 .skip_envp:
   cmp qword [rdi], 0
-  je .envp_done
+  je  .envp_done
   add rdi, 8
   jmp .skip_envp
 .envp_done:
-  add rdi, 8 ; skip NULL -> &auxv[0]
-
+  add rdi, 8                    ; skip NULL → &auxv[0]
 .find_at_phdr:
   mov rax, [rdi]
-  test rax, rax ; AT_NULL = 0?
-  jz .no_at_phdr
-  cmp rax, 3 ; AT_PHDR = 3
-  je .got_at_phdr
+  test rax, rax
+  jz  .no_at_phdr
+  cmp rax, 3                    ; AT_PHDR = 3
+  je  .got_at_phdr
   add rdi, 16
   jmp .find_at_phdr
-
 .got_at_phdr:
-  mov rdi, [rdi + 8] ; rdi = AT_PHDR runtime address
-  mov rax, 0xFEEDFACEFEEDFACE ; placeholder: PT_PHDR link-timep p_vaddr
-  sub rdi, rax ; load_base = AT_PHDR_runtime - PT_PHDR_link_vaddr
+  mov rdi, [rdi + 8]
+  mov rax, 0xFEEDFACEFEEDFACE   ; link-time PT_PHDR p_vaddr (patched)
+  sub rdi, rax                  ; load_base = AT_PHDR_runtime − PT_PHDR_vaddr
   jmp .have_load_base
-
 .no_at_phdr:
-  xor rdi, rdi ; load_base = 0 fallback
-
+  xor rdi, rdi
 .have_load_base:
-  mov rbp, rdi ; rbp = load_base (survives all subsequent syscalls)
-  add r14, rbp ; r14 = actual runtime text address
+  mov rbp, rdi
+  add r15, rbp                  ; r15 = runtime .text address
 
-  mov r12, r14 ; r12 = runtime text start (saved, survives syscall)
-
-  
-  ; mprotect(page_aligned(text_start), uncompressed_size + page_offset, RWX)
-  ; must cover full uncompressed range — decomp memcpy writes that many bytes
-  mov rdi, r14
-  mov rsi, r13
-  mov rax, rdi
-  and rax, 0xFFF  ; page offset of text start
-  add rsi, rax    ; extend size to cover from page boundary to text end
-  and rdi, ~0xFFF ; round down to page boundary
-  mov rdx, 7 ; RWX
-  mov rax, 10 ; mprotect
-  syscall
+  ; ── RC4 KSA: build S-box on the stack ────────────────────────────────────
+  sub rsp, 272
+  mov [rsp + 256], r12          ; persist rtld_fini (saved before first syscall)
 
   xor r8, r8
-  xor r9, r9
+.ksa_init:
+  mov byte [rsp + r8], r8b
+  inc r8
+  cmp r8, 256
+  jne .ksa_init
 
-.loop3:
-  inc r8b                   ; i = (i+1) % 256 — must wrap at 8 bits, not 32
-  movzx r9, r9b
-  add r9b, byte [rsp + r8]
+  xor r8, r8                    ; i = 0
+  xor r9, r9                    ; j = 0
+.ksa_mix:
+  mov al,   byte [rsp + r8]
+  mov r10,  r8
+  and r10,  0x0F                ; i % 16
+  add al,   byte [rcx + r10]
+  add r9b,  al
+  mov al,   byte [rsp + r8]
+  mov r10b, byte [rsp + r9]
+  mov byte  [rsp + r8], r10b
+  mov byte  [rsp + r9], al
+  inc r8d
+  cmp r8d, 256
+  jne .ksa_mix
 
-  ; swap s[i] s[j]
-  mov al, byte [rsp + r8]
-  mov bl, byte [rsp + r9]
-  mov byte [rsp + r8], bl
-  mov byte [rsp + r9], al
+  ; ── mmap buffer for RC4-decrypted compressed stream ──────────────────────
+  ; We never mprotect .text to PROT_WRITE.  On kernels with Intel CET/IBT
+  ; support, adding PROT_WRITE to an executable page clears the kernel's
+  ; endbr64 endpoint tracking for that page.  Restoring PROT_EXEC does NOT
+  ; rebuild the tracking, so the next indirect call into the page (e.g.
+  ; _dl_fini → .fini at exit) faults with SIGSEGV/SEGV_ACCERR.
+  ; Writing through /proc/self/mem bypasses page permissions entirely and
+  ; leaves IBT metadata untouched.
+  xor rdi, rdi
+  mov rsi, r14          ; compressed_len
+  mov rdx, 3            ; PROT_READ|PROT_WRITE
+  mov r10, 0x22         ; MAP_PRIVATE|MAP_ANONYMOUS
+  mov r8,  -1
+  xor r9,  r9
+  mov rax, 9            ; sys_mmap
+  syscall               ; ← clobbers rcx, r11 (SYSRET mechanism)
+  mov rbx, rax          ; rbx = decrypted_buf base (rbx survives syscalls)
 
-  ; data[k] ^= s[(s[i] + s[j]) % 256]
-  mov al, byte [rsp + r8] ; al = new s[i]
-  add al, byte [rsp + r9] ; al = new s[i] + new s[j]
-  movzx rax, al ; zero extend al for use as index
-  mov bl, byte [rsp + rax] ; bl = s[(s[i] + s[j]) % 256]
-  xor byte [r14], bl ; data[k] ^= bl
-  inc r14
-  dec r15
-  jnz .loop3
+  ; ── RC4 PRGA: decrypt .text[0..compressed_len) → decrypted_buf ───────────
+  ; After each syscall rcx and r11 are undefined; we re-initialise them here.
+  xor r8d, r8d          ; i = 0
+  xor r9d, r9d          ; j = 0
+  mov r11, r15          ; r11 = advancing source ptr (ciphertext in .text)
+  mov rdi, rbx          ; rdi = advancing dest ptr (plaintext → decrypted_buf)
+  mov rcx, r14          ; rcx = byte counter
+.prga:
+  test rcx, rcx
+  jz   .prga_done
+  inc  r8b
+  add  r9b, byte [rsp + r8]
+  mov  al,   byte [rsp + r8]   ; al   = S[i]
+  mov  r10b, byte [rsp + r9]   ; r10b = S[j]
+  mov  byte [rsp + r8], r10b   ; swap
+  mov  byte [rsp + r9], al
+  add  al, r10b                ; al = (S[i] + S[j]) % 256
+  movzx rax, al
+  mov  al, byte [rsp + rax]    ; keystream byte
+  xor  al, byte [r11]          ; XOR with ciphertext
+  mov  byte [rdi], al
+  inc  r11
+  inc  rdi
+  dec  rcx
+  jmp  .prga
+.prga_done:
+  ; rdi = decrypted_buf + compressed_len (spent)
+  ; r11 = text_start   + compressed_len (spent; will be clobbered by next syscall anyway)
+  ; rbx = decrypted_buf BASE             (preserved)
 
-  ; mmap(NULL, uncompressed_size, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0)
-  push r12 ; save original text_start
-  xor rdi, rdi ; addr = NULL
-  mov rsi, r13 ; length = uncompressed_size
-  mov rdx, 3 ; PROT_READ|PROT_WRITE
-  mov r10, 0x22 ; MAP_PRIVATE|MAP_ANONYMOUS
-  mov r8, -1 ; fd = -1
-  xor r9, r9 ; offset = 0
-  mov rax, 9 ; mmap
-  syscall
-  pop r10 ; original text_start
-  mov rbx, rax ; dst
-  mov r11, rax ; r11 = mmap base
+  ; ── mmap buffer for LZSS decompressed output ─────────────────────────────
+  xor rdi, rdi
+  mov rsi, r13          ; uncompressed_len
+  mov rdx, 3
+  mov r10, 0x22
+  mov r8,  -1
+  xor r9,  r9
+  mov rax, 9            ; sys_mmap
+  syscall               ; ← clobbers rcx, r11
+  ; rax = decomp_buf address.
+  ; Save to both a working register (r11, used only within LZSS before the
+  ; next syscall) and the stack (survives all subsequent syscalls).
+  mov r11, rax
+  mov [rsp + 264], rax  ; [rsp+264] = decomp_buf base (syscall-safe storage)
 
-  ; TODO: lzss decomp
-  ; r12 = src 
-  ; rbx = dst (output buffer)
-
-  xor r9d, r9d ; bitcount = 0
+  ; ── LZSS decompression: decrypted_buf → decomp_buf ──────────────────────
+  ; r10 = advancing read ptr  (starts at decrypted_buf base = rbx)
+  ; r12 = advancing write ptr (starts at decomp_buf base = r11)
+  ; r8b = current flag byte, r9b = bits remaining in flag byte
+  mov r10, rbx          ; read from start of decrypted_buf
+  mov r12, r11          ; write to start of decomp_buf
+  xor r8d, r8d
+  xor r9d, r9d
 
 .lzss_loop:
-  mov rax, rbx
-  sub rax, r11 ; bytes written = dst - mmap_base
-  cmp rax, r13 ; done?
+  mov rax, r12
+  sub rax, r11          ; bytes written = write_ptr − decomp_buf_base
+  cmp rax, r13
   jae .lzss_done
 
-  ; get next flag bit
   test r9b, r9b
-  jnz .lzss_have_bit
-  mov r8b, [r12] ; load new flag byte
-  inc r12
-  mov r9b, 8
+  jnz  .lzss_have_bit
+  mov  r8b, [r10]
+  inc  r10
+  mov  r9b, 8
 .lzss_have_bit:
-  shl r8b, 1 ; MSB -> CF
-  dec r9b
-  jnc .lzss_match ; bit=1 → literal, bit=0 → match
+  shl  r8b, 1           ; CF=1 → literal, CF=0 → match
+  dec  r9b
+  jnc  .lzss_match
 
 .lzss_literal:
-  mov al, [r12]
+  mov al, [r10]
+  inc r10
+  mov [r12], al
   inc r12
-  mov [rbx], al
-  inc rbx
   jmp .lzss_loop
 
 .lzss_match:
-  movzx eax, byte [r12] ; byte1
-  inc r12
-  movzx edx, byte [r12] ; byte 2
-  inc r12
-  mov ecx, eax
-  shl ecx, 4
-  mov esi, edx
-  shr esi, 4
-  or ecx, esi ; ecx = offset
-  and edx, 0xF
-  add edx, 3 ; edx = length
-  mov rsi, rbx
-  sub rsi, rcx ; rsi = dst - offset
+  ; byte1 = back_dist[11:4], byte2 = back_dist[3:0] | (len − 3)
+  movzx eax, byte [r10]
+  inc   r10
+  movzx edx, byte [r10]
+  inc   r10
+  mov   ecx, eax
+  shl   ecx, 4
+  mov   esi, edx
+  shr   esi, 4
+  or    ecx, esi          ; ecx = back_dist
+  and   edx, 0xF
+  add   edx, 3            ; edx = match length
+  mov   rsi, r12
+  sub   rsi, rcx          ; rsi = copy source (back-reference in output)
 .lzss_copy:
   mov al, [rsi]
-  mov [rbx], al
+  mov [r12], al
   inc rsi
-  inc rbx
+  inc r12
   dec edx
   jnz .lzss_copy
   jmp .lzss_loop
 
-
 .lzss_done:
-  ; memcpy: copy rbx back to r12, length = r13
-  mov rdi, r10
-  mov rsi, r11
-  mov rcx, r13
-  rep movsb
+  ; r11 still = decomp_buf base (LZSS had no syscalls, r11 intact here).
+  ; All syscalls below will clobber r11; use [rsp+264] for decomp_buf base.
 
-  ; munmap(rbx, uncompressed_size)
-  mov rdi, r11
-  mov rsi, r13
-  mov rax, 11 ; munmap
+  ; ── write decompressed .text back via /proc/self/mem ─────────────────────
+  call .after_procmem_path
+  db "/proc/self/mem", 0
+.after_procmem_path:
+  pop  rdi                ; rdi = path
+  mov  rax, 2             ; sys_open
+  mov  rsi, 2             ; O_RDWR
+  xor  rdx, rdx
+  syscall                 ; clobbers r11, rcx
+  mov  r12, rax           ; r12 = fd (r12 is callee-saved; safe across syscalls)
+
+  mov  rdi, r12           ; fd
+  mov  rsi, r15           ; offset = runtime .text address
+  xor  rdx, rdx           ; SEEK_SET = 0
+  mov  rax, 8             ; sys_lseek
   syscall
 
-  ; restore .text to R-X
-  ; size = r14 (text_end after loop) - r12 (text_start) - avoids relying on rbx
-  mov rdi, r10
-  mov rsi, r13
-  mov rax, rdi
-  and rax, 0xFFF  ; page offset of text start
-  add rsi, rax    ; extend size to cover from page boundary to text end
-  and rdi, ~0xFFF
-  mov rdx, 5 ; R-X
-  mov rax, 10 ; mprotect
+  mov  rdi, r12           ; fd
+  mov  rsi, [rsp + 264]   ; decomp_buf base (from stack; r11 was clobbered)
+  mov  rdx, r13           ; uncompressed_len
+  mov  rax, 1             ; sys_write
   syscall
-  
-  mov rdx, [rsp + 256]  ; restore rtld_fini before jumping to _start
-  add rsp, 264          ; restore rsp exactly to ISP — glibc _start aligns stack itself
 
-  mov r11, 0xAAAAAAAAAAAAAAAA ; placeholder for e_entry
-  add r11, rbp ; + load_base = actual runtime entry
+  mov  rdi, r12           ; fd
+  mov  rax, 3             ; sys_close
+  syscall
+
+  ; ── release temporary buffers ────────────────────────────────────────────
+  mov rdi, rbx            ; decrypted_buf base
+  mov rsi, r14            ; compressed_len
+  mov rax, 11             ; sys_munmap
+  syscall
+
+  mov rdi, [rsp + 264]    ; decomp_buf base
+  mov rsi, r13            ; uncompressed_len
+  mov rax, 11
+  syscall
+
+  ; ── restore ABI state and jump to original entry point ───────────────────
+  mov rdx, [rsp + 256]    ; restore rtld_fini for _start
+  add rsp, 272            ; undo stack frame
+
+  mov r11, 0xAAAAAAAAAAAAAAAA  ; e_entry placeholder (patched)
+  add r11, rbp                 ; + load_base = runtime _start
   jmp r11
