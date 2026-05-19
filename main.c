@@ -10,6 +10,9 @@
 /*                                                                            */
 /* ************************************************************************** */
 
+#ifndef _GNU_SOURCE
+# define _GNU_SOURCE
+#endif
 #include "stub.h"
 #include <elf.h>
 #include <fcntl.h>
